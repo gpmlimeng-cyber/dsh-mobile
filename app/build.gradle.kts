@@ -8,7 +8,11 @@ android {
   compileSdk = 36
 
   defaultConfig {
-    applicationId = "com.dsharnessmobile.shell"
+    // deepcode 二开（共存安装）：独立 applicationId，与基线主包 com.dsharnessmobile.shell 并存。
+    // 不同包名即不同应用：各自 data 目录、各自权限授予（Shizuku / All Files Access 需按新包重授），
+    // 两包覆盖安装互不影响。默认取二开值；-PapplicationIdOverride=<id> 可覆盖回任意值。
+    // namespace 保持 com.dsharnessmobile.shell（R 类与既有代码引用不动；namespace 不等于 applicationId）。
+    applicationId = providers.gradleProperty("applicationIdOverride").getOrElse("com.deepcode.shell")
     minSdk = 26
     // targetSdk 34: Android 15+ forbids exec of app-data ELF for targetSdk 35+
     // (the embedded engine, bash, and every child command would need linker64

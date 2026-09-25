@@ -37,6 +37,15 @@ cd ..\dsh-client-ui-responsive && npm test && npm run build
 cd ..\plugins\dsh-android-<pkg> && npm run build
 ```
 
+**arm64 真机构建（在壳内直接构建，2026-09-25 打通）**：本机无 Windows/WSL/`pwsh`，走 Node 链 + gradle 原生：
+```bash
+node scripts/build-apk.mjs --abi arm64 --suffix <sfx>    # 门禁 → 注入 → gradle → out/v<ver>/
+./gradlew :app:assembleDebug --no-daemon -PversionNameSuffix=<sfx>   # 快照已写进 assets 时，只跑打包
+```
+环境前提与五个硬坑（`execPath`=linker64、`execSync` 默认 shell 被劫持、`LD_PRELOAD` 经 reroute 丢失、`process.platform=android`、SDK 工具全 x86_64）见 `gotchas.md` 172-175 与 176-178；插件 `lib/` 需先 `npm ci --ignore-scripts && npm run build`（见坑 175）。
+
+**共存安装（deepcode 二开）**：`applicationId` 改由 `-PapplicationIdOverride=<id>` 注入，默认二开值 `com.deepcode.shell`；不传即用该默认值，与基线主包 `com.dsharnessmobile.shell` 并存（不同包名 = 独立 data 目录与权限授予，Shizuku / All Files Access 需按新包重授）。`namespace` 保持基线值（R 类与既有代码引用不动），桌面显示名由 `app_name` 承担（二开包为 `DeepCode Dev`）。
+
 > **多线程/并行优先铁律（2026-09-08 用户定例，改任何构建脚本都适用）**：编译、构建、打包、归档、解压**一律使用多线程脚本**，不得用单线程等价命令替代——目的就是省掉一切可以省掉的构建时间。现行落点：
 > - 快照归档 `tar -c ... | xz -T0 -6`（多线程压缩；裸 `tar -cJf` 单线程 ≈380s vs `xz -T0` ≈48s，2c 实测）；
 > - 快照/基座解压 `xz -dT0 | tar -x`（多线程解压，替代 `tar -xJf` 的单线程解码）；
@@ -119,3 +128,5 @@ cd ..\plugins\dsh-android-<pkg> && npm run build
 | PowerShell 转义 | 双引号内 `$var` 本地展开（引号地狱）；二进制经 `adb exec-out`/push 传输 | 坑 8 |
 | ABI 匹配 | debug 包默认 x86_64 快照，装 arm64 真机必崩；构建/安装前核对（3.2 步 4） | 坑 18 |
 | 工作树行尾噪声 | `git status` 的 ` M` 与 `check-patch-mirror` 的「仅行尾差异」WARN 常来自 autocrlf（一侧检出为 CRLF），**不是**内容漂移。先逐字节复核（`cmp a b` / `git diff --ignore-cr-at-eol`）再决定要不要动文件，别按噪声改内容 | 铁律 5/6 |
+| arm64 真机构建（壳内） | 无 `pwsh`：直接 `node scripts/build-apk.mjs`；工具链（JDK17 / aapt2 / aidl / zipalign / apksigner / adb）取 Termux 源 + 自实现，SDK 自带 x86_64 工具需覆盖；后台任务不继承 `$PREFIX`、`/tmp` 不可写，临时与日志一律落工作区 | 坑 172-178 |
+| 共存安装（二开） | `-PapplicationIdOverride=<id>`（默认 `com.deepcode.shell`）与主包并存；`versionName` 用 `-PversionNameSuffix` 区分；两包各自授权 | 上文「共存安装」 |

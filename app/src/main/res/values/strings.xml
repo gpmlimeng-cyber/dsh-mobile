@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-  <string name="app_name">DeepCode</string>
+  <string name="app_name">DeepCode Dev</string>
   <string name="ds_brand_subtitle">内嵌运行时</string>
   <string name="ds_start_engine">启动引擎</string>
   <string name="ds_retry">重试</string>

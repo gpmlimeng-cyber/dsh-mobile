@@ -149,3 +149,13 @@
 - insert:
     - id: android-vdisplay
       name: '@dsh-android/dsh-android-vdisplay'
+
+# deepcode 二开（2026-09-26，引擎 0.1.7-rc.2 起）：上游 experimental voice-input bundle 的平台白名单
+# 只含 darwin-arm64/x64、linux-arm64/x64、win32-x64 —— android-arm64 直接抛
+# "Local speech is unavailable for android-arm64"（实机表现：界面提示「语音输入准备失败」；该文案不进
+# engine.log，即不影响启动，只在触发语音输入时抛）。Android 无本地语音运行时、上游亦未发布 android 资产，
+# 故移动侧停用其 UI 入口与 sensevoice 后端；speech-to-text / api-speech-to-text 保留（无 UI 触发即不被调用）。
+- id: ui-voice-input
+  disabled: true
+- id: speech-to-text-sensevoice
+  disabled: true

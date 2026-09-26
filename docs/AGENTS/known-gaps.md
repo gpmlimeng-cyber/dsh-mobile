@@ -238,3 +238,7 @@ real-only 反证；判据全在设备事实上，证据不足判 `INCONCLUSIVE` 
 - **`dsh plugin` 子命令在共存包里不可用**：快照里的 `pnpm` shim 烧的是主包前缀
   （`/data/user/0/com.dsharnessmobile.shell/…`），dev 包（`com.deepcode.shell`）调用必失败 ⇒
   版本豁免只能手写 `compatibility.json`（见坑 181）；同理其它走 pnpm 的插件管理动作在共存包里都不可用。
+- **本地语音输入在 Android 上不可用（0.1.7 起）**：上游 `dsh-experimental-voice-input-bundle` 的平台白名单
+  不含 `android-arm64`，且未发布 android 运行时/模型资产 ⇒ 移动侧已在 profile 补丁层停用其 UI 入口
+  （`ui-voice-input`）与 sensevoice 后端（`speech-to-text-sensevoice`），见坑 183。若上游日后提供 android
+  运行时或资产，去掉这两条 `disabled` 即可恢复。

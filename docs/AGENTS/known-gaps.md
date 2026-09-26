@@ -214,3 +214,27 @@ real-only 反证；判据全在设备事实上，证据不足判 `INCONCLUSIVE` 
   `android_capabilities · all`（见证据目录 `p2-conversation.txt`），随后仍在推理中被本轮取证打断，
   未取到完成态。故「解锁链路是否被模型自主走通」目前只有**一次未完成的观察**，
   尚不足以判定（既不能算通过，也不能算断链）。
+
+## 引擎升级到 0.1.7-rc.2 后的已知缺口（2026-09-26，deepcode 二开线）
+
+- **combo 缓存族未移植（A3/A5/C3/P1）**：上游重写了 `dsh-client-modules` 的组合模型
+  （`orderByModuleGraph` + `partitionComboRecords` + `buildBatch`），四条补丁针对的旧模型已不存在，
+  故在 0.1.7 上判「不适用」。**影响面**：丢掉「构建期 combo 预计算 + 单条惰性 + 并行 + 探针」这层
+  启动优化 ⇒ 冷启动变慢（功能不受影响）。要做，需在新模型上重做等价物，属独立工程。
+  A4（compose 惰性 + 去重）在新模型上仍可施加，已保留。
+- **8 个 @deepseek-ai 包在 0.1.7-rc.2 未发布**：`dsh-code-runtime`、`dsh-code-runtime-worker-thread`、
+  `dsh-e2b`、`dsh-experimental-agent-team-web-profile`、`dsh-fs-e2b`、`dsh-settings-file`、
+  `dsh-subprocess-e2b`、`dsh-workflow-worker-thread`。装配时经「已装配树内是否存在依赖者 + 是否被
+  补丁层点名」双向核对后**省略**（无人依赖、未被点名）；`dsh-agent-presets` 因被
+  `dsh-host-apiproxy` 的 peer 引用而回落到其最新可用版 `0.1.5-rc.3`。若上游后续需要这些包，
+  需回查其可用版本线。
+- **`patchReload` 特性被上游移除**：移动壳当初为 Android 强制 `startup` 档（避免 live reload 的
+  冷启动开销）的优化**失去对象**（见坑 182）。若上游以其它机制保留了热重载，需在新机制上重新评估
+  Android 侧的冷启动代价。
+- **F9 垫片未进官方快照构建链**：`node-addon-require-builtin-android-arm64` 的纯 JS 垫片目前只落在
+  「已装配的引擎树 + 设备侧运行时」（源码留档工作区 `tools/f9-android-shim/`），**没有**接进
+  `build-snapshot`/`inject-all` 的注入面。要做成可发布形态（新 APK 里也带），需把它作为额外包
+  注入快照（可复用 overlay 的 `extraPresent` 机制，见坑 180）。
+- **`dsh plugin` 子命令在共存包里不可用**：快照里的 `pnpm` shim 烧的是主包前缀
+  （`/data/user/0/com.dsharnessmobile.shell/…`），dev 包（`com.deepcode.shell`）调用必失败 ⇒
+  版本豁免只能手写 `compatibility.json`（见坑 181）；同理其它走 pnpm 的插件管理动作在共存包里都不可用。

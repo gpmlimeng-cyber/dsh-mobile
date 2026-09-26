@@ -130,3 +130,32 @@ node scripts/build-apk.mjs --abi arm64 --suffix <sfx>    # 门禁 → 注入 →
 | 工作树行尾噪声 | `git status` 的 ` M` 与 `check-patch-mirror` 的「仅行尾差异」WARN 常来自 autocrlf（一侧检出为 CRLF），**不是**内容漂移。先逐字节复核（`cmp a b` / `git diff --ignore-cr-at-eol`）再决定要不要动文件，别按噪声改内容 | 铁律 5/6 |
 | arm64 真机构建（壳内） | 无 `pwsh`：直接 `node scripts/build-apk.mjs`；工具链（JDK17 / aapt2 / aidl / zipalign / apksigner / adb）取 Termux 源 + 自实现，SDK 自带 x86_64 工具需覆盖；后台任务不继承 `$PREFIX`、`/tmp` 不可写，临时与日志一律落工作区 | 坑 172-178 |
 | 共存安装（二开） | `-PapplicationIdOverride=<id>`（默认 `com.deepcode.shell`）与主包并存；`versionName` 用 `-PversionNameSuffix` 区分；两包各自授权 | 上文「共存安装」 |
+
+### 3.5 引擎升级（就地升级 dev 包运行时；2026-09-26 打通）
+
+适用场景：不重建 APK/快照，只把**共存包**（`com.deepcode.shell`）里的 `@deepseek-ai/dsh` 树升到新版本。
+工具在工作区（非本仓）：`tools/engine-overlay-bump.mjs`、`tools/fetch-engine-tree-fast.sh`、
+`tools/registry-from-tree.mjs`、`tools/deploy-engine-to-dev.sh`。
+
+1. **解析新引擎版本线**：`npm view @deepseek-ai/dsh dist-tags`。注意**并非所有 `@deepseek-ai/*` 与引擎同版本**
+   （既有 `4.0.2`/`1.0.1`/`0.1.2` 等异构线），且**部分包在新版根本没发布**（npm 404）——逐包拉取前必须核对。
+2. **升级登记表**：`node tools/engine-overlay-bump.mjs <新版本> <npm解析树node_modules> <输出json>`。
+   规则：旧值 == 旧引擎版本 ⇒ 锁步跟随新版本；其余优先取 npm 实际解析版本；`keepUnpublished` 原样保留。
+3. **按登记表逐包拉取建树**：`bash tools/fetch-engine-tree-fast.sh <registry.json> <stageRoot>`（curl 直取
+   npm tarball + 12 路并行；`npm pack` 逐包启动在本机慢一个数量级）。**必须再做一次完整性补漏**
+   （按 `<name>\t<ver>\t<dest>` 清单核对 `dest/package.json` 是否存在），再用 `cp -an` 从 npm 解析树
+   无覆盖补齐第三方依赖——否则会缺 `semver`/`cordis` 这类被平台过滤跳过的包。
+4. **补丁链**：`node scripts/patches/apply-patches.mjs <stageRoot> --apply --scope engine`。要求
+   `ALL OK（N/N）`；「不适用」是合法结果（上游删/重写特性，见坑 182），「锚点未命中」才是真漂移。
+5. **平台兼容两件套**（0.1.7 起必需，见坑 180/181）：① 放 F9 垫片包
+   `<engine>/node_modules/node-addon-require-builtin/node_modules/node-addon-require-builtin-android-arm64`
+   （源码 `tools/f9-android-shim/`）；② 在 `profiles/web/compatibility.json` 写精确版本豁免，
+   否则移动插件（`shell-termux`/`ui-responsive`）会被兼容闸门停用——**boot 成功但能力残缺**。
+6. **部署与回滚**：`bash tools/deploy-engine-to-dev.sh <stageRoot>`（`run-as` 以该包 uid 换树：旧树留档
+   `dsh.old-<版本>`、拉起重验）；出问题用 `bash tools/deploy-engine-to-dev.sh - --restore` 一键回滚，
+   或重装 APK 整体回到快照版本。验证判据：`netstat -lnt` 有该包端口 + `boot-diag.log` 出 `page-ready`
+   + `boot-fail.log` mtime 不再前进 + `grep -c "disabling profile plugin row" engine.log` = 0。
+
+> 在 `run-as` 里手工跑引擎 CLI（诊断用）必须带全套环境，否则是**假错误**：`LD_LIBRARY_PATH=<prefix>/lib`、
+> `LD_PRELOAD=<prefix>/lib/libtermux-exec-ld-preload.so`、`PATH=<prefix>/bin:/system/bin`、`DSH_HOME=<该包 home>/.dsh`、
+> `OPENSSL_CONF=<prefix>/etc/tls/openssl.cnf`（缺最后一条报 `OpenSSL configuration error`，缺前两条报 `libz.so.1 not found`）。

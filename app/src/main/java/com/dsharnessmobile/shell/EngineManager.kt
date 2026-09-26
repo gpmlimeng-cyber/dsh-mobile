@@ -977,7 +977,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
 
   /** Starts the embedded engine. [force] is reserved for a confirmed hung boot
    * after its full cold-start deadline; routine probes must never force-restart. */
-  fun startEngine(port: Int = 3080, force: Boolean = false): Boolean {
+  fun startEngine(port: Int = BuildConfig.ENGINE_PORT, force: Boolean = false): Boolean {
     // 快照刷新进行中禁止拉起（看门狗旁路闸门）：主流程刷新完成后自会启动；期间拉起只会
     // 起在半新半旧的运行时上。返回 true = 「无需再启动」（与冷却窗语义一致，5s 后看门狗复检）。
     if (EngineManager.snapshotRefreshing.get()) {
@@ -1497,7 +1497,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
       if (!EngineProbe.portReachable(1_000)) return
       try { Thread.sleep(1_000) } catch (_: InterruptedException) {}
     }
-    LogCollector.log(TAG, "killExistingEngine: port 3080 still occupied after cleanup (release recheck failed)")
+    LogCollector.log(TAG, "killExistingEngine: port ${BuildConfig.ENGINE_PORT} still occupied after cleanup (release recheck failed)")
   }
 
   /** Reset the 90s cooldown window: auto-undo (config rollback) or user retry

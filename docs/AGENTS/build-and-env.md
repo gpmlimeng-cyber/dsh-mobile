@@ -44,7 +44,7 @@ node scripts/build-apk.mjs --abi arm64 --suffix <sfx>    # 门禁 → 注入 →
 ```
 环境前提与五个硬坑（`execPath`=linker64、`execSync` 默认 shell 被劫持、`LD_PRELOAD` 经 reroute 丢失、`process.platform=android`、SDK 工具全 x86_64）见 `gotchas.md` 172-175 与 176-178；插件 `lib/` 需先 `npm ci --ignore-scripts && npm run build`（见坑 175）。
 
-**共存安装（deepcode 二开）**：`applicationId` 改由 `-PapplicationIdOverride=<id>` 注入，默认二开值 `com.deepcode.shell`；不传即用该默认值，与基线主包 `com.dsharnessmobile.shell` 并存（不同包名 = 独立 data 目录与权限授予，Shizuku / All Files Access 需按新包重授）。`namespace` 保持基线值（R 类与既有代码引用不动），桌面显示名由 `app_name` 承担（二开包为 `DeepCode Dev`）。
+**共存安装（deepcode 二开）**：`applicationId` 改由 `-PapplicationIdOverride=<id>` 注入，默认二开值 `com.deepcode.shell`；不传即用该默认值，与基线主包 `com.dsharnessmobile.shell` 并存（不同包名 = 独立 data 目录与权限授予，Shizuku / All Files Access 需按新包重授）。`namespace` 保持基线值（R 类与既有代码引用不动），桌面显示名由 `app_name` 承担（二开包为 `DeepCode Dev`）。**引擎端口同样必须可区分**：`BuildConfig.ENGINE_PORT` 由 `-PenginePort=<n>` 注入（默认基线 3080、二开 3081，见坑 179）——两包同端口时第二个包必然 `EADDRINUSE` 起不来（界面只报「启动失败」）。
 
 > **多线程/并行优先铁律（2026-09-08 用户定例，改任何构建脚本都适用）**：编译、构建、打包、归档、解压**一律使用多线程脚本**，不得用单线程等价命令替代——目的就是省掉一切可以省掉的构建时间。现行落点：
 > - 快照归档 `tar -c ... | xz -T0 -6`（多线程压缩；裸 `tar -cJf` 单线程 ≈380s vs `xz -T0` ≈48s，2c 实测）；

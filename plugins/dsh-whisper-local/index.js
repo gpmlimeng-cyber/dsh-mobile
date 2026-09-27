@@ -21,7 +21,8 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { availableParallelism } from "node:os";
 
 export const name = "dsh-whisper-local";
 export const inject = ["speechToText"];
@@ -47,13 +48,47 @@ const DEFAULTS = {
     "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/",
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/",
   ],
-  threads: 4,
+  /**
+   * 推理线程数；0 = 自动（`min(8, 可用并行度 - 1)`）。实测同一段 11 s 音频、small-q5 档：
+   * 4 线程 17.7 s / 6 线程 12.7 s / 8 线程 10.4 s（本机 10 核）——whisper 的 CPU 推理对线程数敏感，
+   * 而留一核给系统是壳侧既有约定（构建并发上限同理）。
+   */
+  threads: 0,
   timeoutMs: 300000,
   launcher: "auto",
   /** 按语言给的初始提示词（whisper.cpp 的简繁/标点矫正法）。 */
   prompts: { zh: "以下是普通话的句子。" },
   languages: ["auto", "zh", "en", "yue", "ja", "ko"],
 };
+
+/**
+ * 解析运行时前缀（`<pkg>/files/usr`）。**不能只看 `process.execPath`**：引擎由壳侧用
+ * `/system/bin/linker64` 装载（坑 172），`process.execPath` 会是 `/apex/com.android.runtime/bin/linker64`
+ * ⇒ 按它推导会得到 `/apex/.../whisper-cli` 这种不存在的路径（真机实测踩到）。
+ * 三源按可靠性排序：① 壳侧注入的 `TERMUX__PREFIX`；② 由引擎自身入口 `process.argv[1]`
+ * （`<prefix>/lib/node_modules/@deepseek-ai/dsh/lib/bin.js`）反推；③ 最后才用 execPath 兜底。
+ */
+export function resolvePrefix(env = process.env, argv1 = process.argv[1], execPath = process.execPath) {
+  const candidates = [];
+  if (typeof env.TERMUX__PREFIX === "string" && env.TERMUX__PREFIX) candidates.push(env.TERMUX__PREFIX);
+  if (typeof argv1 === "string" && argv1.length > 0) candidates.push(resolve(dirname(argv1), "../../../../.."));
+  if (typeof execPath === "string" && execPath.length > 0) candidates.push(dirname(execPath));
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(join(candidate, "bin"))) return candidate;
+    } catch {
+      /* 继续下一个候选 */
+    }
+  }
+  return candidates[0] ?? ".";
+}
+
+/** 线程数解析：显式配置优先，0/非法值按机器并行度自动定（留一核给系统，上限 8）。 */
+export function resolveThreads(configured, parallelism = availableParallelism?.() ?? 4) {
+  if (Number.isInteger(configured) && configured >= 1) return Math.min(configured, 16);
+  const count = Number.isFinite(parallelism) && parallelism > 0 ? parallelism : 4;
+  return Math.max(2, Math.min(8, count - 1));
+}
 
 /** whisper 的语言表里没有 yue（粤语），落到 zh。 */
 const WHISPER_LANGUAGE = { yue: "zh" };
@@ -249,12 +284,14 @@ class ModelPreparation {
 export function apply(ctx, config = {}) {
   const settings = { ...DEFAULTS, ...config };
   const home = process.env.DSH_HOME ?? ".";
+  const prefix = resolvePrefix();
   if (typeof settings.binary !== "string" || settings.binary.length === 0) {
-    settings.binary = join(dirname(process.execPath), "whisper-cli");
+    settings.binary = join(prefix, "bin", "whisper-cli");
   }
   if (typeof settings.libraryPath !== "string" || settings.libraryPath.length === 0) {
-    settings.libraryPath = join(dirname(settings.binary), "..", "lib", "dsh-whisper");
+    settings.libraryPath = join(prefix, "lib", "dsh-whisper");
   }
+  settings.threads = resolveThreads(settings.threads);
   const dir = settings.modelDirectory || join(home, "speech-to-text", "whisper");
   const tmpRoot = join(home, "tmp");
   mkdirSync(tmpRoot, { recursive: true });

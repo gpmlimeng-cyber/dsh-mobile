@@ -55,6 +55,33 @@ test("启动阶梯：直连 → linker64 → sh -c，顺序与 argv 形态固定
   assert.deepEqual(ladder[2].argv, ['-c', 'exec "$0" "$@"', '/x/whisper-cli', '-m', 'model', '-f', 'a.wav']);
 });
 
+test("前缀推导：不吃 linker64 的 execPath（引擎里 execPath 是 linker，真机实测踩到）", () => {
+  // 引擎由壳侧用 /system/bin/linker64 装载 ⇒ process.execPath === /apex/com.android.runtime/bin/linker64。
+  // 若按它推导就会得到 /apex/.../whisper-cli（不存在）。三源按可靠性排序：
+  // ① TERMUX__PREFIX（壳侧注入）② 由 argv[1] 反推 ③ execPath 兜底。
+  const fake = mkdtempSync(join(tmpdir(), "whisper-prefix-"));
+  mkdirSync(join(fake, "bin"), { recursive: true });
+  mkdirSync(join(fake, "lib", "node_modules", "@deepseek-ai", "dsh", "lib"), { recursive: true });
+  const argv1 = join(fake, "lib", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
+
+  // ① 壳侧 env 优先
+  assert.equal(plugin.resolvePrefix({ TERMUX__PREFIX: fake }, "/nonexistent/bin.js", "/apex/com.android.runtime/bin/linker64"), fake);
+  // ② env 缺席时由 argv[1] 反推（五层到前缀）
+  assert.equal(plugin.resolvePrefix({}, argv1, "/apex/com.android.runtime/bin/linker64"), fake);
+  // ③ 都不行时退回 execPath 目录（此处 linker 目录不存在 bin/，故返回首个候选即可，不抛）
+  assert.doesNotThrow(() => plugin.resolvePrefix({}, "/nonexistent/bin.js", "/apex/com.android.runtime/bin/linker64"));
+});
+
+test("线程数：显式配置优先；0/非法值按机器并行度自动（留一核，上限 8）", () => {
+  // 实测（11 s 音频 / small-q5 档）：4 线程 17.7 s、6 线程 12.7 s、8 线程 10.4 s —— 线程数对
+  // whisper 的 CPU 推理影响很大，故默认按机器自动而不是写死 4。
+  assert.equal(plugin.resolveThreads(3), 3);
+  assert.equal(plugin.resolveThreads(32), 16, "显式值封顶 16，防用户手填过大");
+  assert.equal(plugin.resolveThreads(0, 10), 8, "10 核 → 留一核且封顶 8");
+  assert.equal(plugin.resolveThreads(0, 4), 3);
+  assert.equal(plugin.resolveThreads(undefined, 1), 2, "极小机器也保底 2");
+});
+
 test("多档注册：内置目录的四档各注册一个 provider（设置页就是模型选择器）", () => {
   const registered = [];
   const ctx = { speechToText: { register: (p) => (registered.push(p), async () => {}) }, effect: (fn) => fn() };

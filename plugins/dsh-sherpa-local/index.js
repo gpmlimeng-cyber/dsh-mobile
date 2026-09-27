@@ -539,16 +539,19 @@ export function apply(ctx, config = {}) {
         threads: settings.threads,
         vad: useVad,
       });
-      const childEnv = {
-        ...process.env,
-        LD_LIBRARY_PATH: [settings.libraryPath, join(prefix, "lib"), process.env.LD_LIBRARY_PATH]
-          .filter(Boolean)
-          .join(":"),
-      };
-      if (!childEnv.LD_PRELOAD) {
-        const preload = join(prefix, "lib", "libtermux-exec-ld-preload.so");
-        if (existsSync(preload)) childEnv.LD_PRELOAD = preload;
-      }
+      /**
+       * 子进程的库环境**只给专属目录**，而且不给它挂 termux-exec 预载。
+       *
+       * 真机实测（引擎内、经 linker64 档启动）：把 `<prefix>/lib` 放进 `LD_LIBRARY_PATH` 会报
+       *   CANNOT LINK EXECUTABLE ".../sherpa-onnx-offline": cannot locate symbol "Xzs_Construct"
+       *   referenced by "/system/lib64/libunwindstack.so"
+       * ——官方 Termux 版 CLI 经 `libandroid.so` 拉进系统库，系统库要的是**系统** `liblzma`，而
+       * `LD_LIBRARY_PATH` 里的 Termux `liblzma` 会把它顶掉（同一份文件在应用域直连执行时不报，
+       * 说明是「经 linker64 启动 + 前缀库参与解析」的组合）。CLI 的 NEEDED 只有 onnxruntime 与
+       * libc++（都在专属目录），故这里既不需要前缀库、也不需要 termux-exec 预载。
+       */
+      const childEnv = { ...process.env, LD_LIBRARY_PATH: settings.libraryPath };
+      delete childEnv.LD_PRELOAD;
 
       const stdout = await new Promise((resolve, reject) => {
         let timer = null;

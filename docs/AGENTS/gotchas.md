@@ -778,3 +778,22 @@
 203. **本机跑 node 单测/门禁的两个环境前提：`--test-isolation=none` 或 `NODE_OPTIONS=--require tools/fix-execpath.cjs`（2026-09-27 实测，否则连既有插件一起全红）**：裸 `node --test plugins/dsh-whisper-local/test/…` 报 `error: expected absolute path: "--test-concurrency=0"`，门禁 `check-plugin-tests.mjs` 里每个插件都报 `error: expected absolute path: "--test"`——**这条错误不是 node 的，是 linker64 的**（同坑 172）：测试运行器用 `process.execPath` 起子进程，而这里 `process.execPath` 是 `/apex/com.android.runtime/bin/linker64`。
     两个各自充分的修法（实测都单独可用）：① `--test-isolation=none`（连子进程都不起）；② `NODE_OPTIONS="--require $W/tools/fix-execpath.cjs"`（把 execPath 写回真实 node ELF）。跑整套门禁时两个都挂上最稳（`build-dev-apk.sh` 已挂 ②）。
     附带一条**门禁判定口径**：`check-plugin-tests.mjs` 用 `/from 'node:test'/`（**单引号**）判「该插件用 node:test」，写 `import { test } from "node:test"`（双引号）会被判成 vitest 分支 → 报 `FAIL …（runner=vitest）` 并去 `npx vitest`，单测明明是绿的。新插件照仓内既有风格用单引号 import。
+
+204. **inject-all 给 external 插件只带 `lib/**` + `package.json`：根目录 `index.js` 的插件必须在注入后再跑一次资产刷新，而三道「成员在场」门禁全绿（2026-09-27 实测，产物级核验才发现）**：`dsh-whisper-local` / `dsh-mimo-asr` / `dsh-sherpa-local` 都是**单文件 `index.js`** 插件，走 `scripts/plugin-dirs.json` 的 `externals` 注入；而 `scripts/inject-all.py` 对 external 目录只收 `lib/**`（排除 `.map`）与 `EXT_INCLUDE_FILES`（`package.json` 等 6 项），根目录 `index.js` **不在注入面内**。
+    实测症状：新构建的 APK 内嵌快照里，`home/.dsh/profiles/{web,headless}/node_modules/dsh-sherpa-local/` **只有 `package.json`**（whisper、mimo 同样如此）。而构建日志里 `[add] web: dsh-sherpa-local (1 files)`、`check-patch-mounts`（挂载双向）与「成员集合一致 / 相对导入可解析」三道判据**全部 PASS**——它们核对的是「包在场 + package.json 的入口声明能解析」，不核对**入口文件是否真的落地**。
+    修法（本仓既有流程，不是新发明）：注入后用工作区资产清单补一遍插件文件——
+    `python3 tools/add-snapshot-assets.py <注入后.tar.xz> <out.tar> tools/snapshot-plugin-assets.json`（清单里三个语音插件各 4 条：web/headless 两 profile × index.js/package.json），再把产物压回 xz 交给 `tools/resume-build-apk.sh`（它只吃 `.deploy-tmp/build-arm64/snap-final2.tar.xz` 这一路径，所以补完要放回该位置）。
+    判据（**产物级**，别只看构建日志）：解包 APK 的 `assets/snapshot.tar.xz`，断言 `usr/bin/sherpa-onnx-offline`、`usr/lib/sherpa-onnx/*`、`home/.dsh/speech-to-text/sherpa/{tokens.txt,silero_vad.onnx}` 与 `home/.dsh/profiles/{web,headless}/node_modules/dsh-sherpa-local/index.js` 同时在场，并核对 `assets/snapshot.sha256` 与内嵌快照的 sha256 相等（本次 `b71e87e1…` 的前一版就缺两个 index.js）。
+
+205. **共存包升级安装不会用新快照覆盖 `home/.dsh/profiles/**`：新加的 profile 行不会进 live patch（2026-09-27 真机实测）**：新 APK 装到已装过的 dev 包上后，`.snapshot-fingerprint` 从 `bf9333b5…` 翻到 `c46bc15e…`、`usr/` 整树换成新的（`usr/bin/sherpa-onnx-offline` 与 `usr/lib/sherpa-onnx/` 都在场 ✓），但 `home/.dsh/profiles/web/cordis.patch.yml` **仍是上一版内容**——`grep -n "id: sherpa-local"` 在设备上为 0，而同一时刻**APK 内嵌快照**里的同名文件含该行（解包断言已过）。
+    后果：插件文件在 `node_modules/` 里齐了，profile 却没那行 ⇒ 引擎不装配它 ⇒ providers 列表里根本没有 `sherpa-sensevoice`（本轮真机第一跑就是这个症状：`providers=whisper-tiny,…,mimo-asr`，无 sherpa，而 engine.log 里一句报错都没有——**静默不装配**，这是最难发现的一类）。
+    真因：`home/` 是用户数据面（`SnapshotUserData` 保留），升级时只换 `usr/`；坑 192 记的是它的孪生形态（陈旧坏 profile 活下来让新包 boot 失败）。`FactoryProfilePatch` 只做「退役 disabled 行」纠偏，不把快照里的新版 patch 合并进来。
+    修法：升级后必须把新行补进 live patch（`sed -i` 插在同类 insert 块里），或者卸载重装/清应用数据；发布前判据 = 设备上 `grep -n "id: <新插件>" files/home/.dsh/profiles/<profile>/cordis.patch.yml` 非空 **且** 引擎内 `speechToText.snapshot()` 里能看到它。
+
+206. **引擎内经 linker64 起的 CLI，`LD_LIBRARY_PATH` 带 `<prefix>/lib` 会把系统库依赖顶掉（`Xzs_Construct` 实锤）（2026-09-27 真机实测）**：`plugins/dsh-sherpa-local` 最初照 `dsh-whisper-local` 的写法把 `<prefix>/lib` 拼进子进程 `LD_LIBRARY_PATH` 并挂 termux-exec 预载，应用域直连执行时一切正常，**装到设备、经 `/system/bin/linker64` 档启动**后稳定失败：
+    `CANNOT LINK EXECUTABLE ".../usr/bin/sherpa-onnx-offline": cannot locate symbol "Xzs_Construct" referenced by "/system/lib64/libunwindstack.so"`
+    真因：官方 Termux 版 CLI 通过 `libandroid.so` 拉进系统库；`libunwindstack.so` 的 NEEDED 里有 `liblzma.so`，而 `LD_LIBRARY_PATH` 里的 Termux `liblzma` 先被解析到 ⇒ 缺 `Xzs_Construct`（xz 的静态 API）。whisper-cli 不受影响是因为它不拉系统库。
+    修法：**专属库目录之外一律不给**——`LD_LIBRARY_PATH` 只写 `<prefix>/lib/sherpa-onnx`，并 `delete childEnv.LD_PRELOAD`（CLI 的 NEEDED 只有 onnxruntime 与 libc++，都在专属目录；也不需要 termux-exec 改写路径）。单测把「子进程看到的 `LD_LIBRARY_PATH`/`LD_PRELOAD`」当成断言对象（假 CLI 回吐环境变量）作为回归锚点。
+    同族提醒：任何**官方预编译**的 Termux 二进制（不是本机自建）都别把前缀库塞进它的搜索路径。
+
+207. **`ctx.speechToText.snapshot()` 里的 `preparation` 是状态快照对象，`prepare()` 只能走注册表（2026-09-27 实测踩到）**：写引擎内自测时顺手写 `provider.preparation.prepare()`，引擎抛 `TypeError: provider.preparation.prepare is not a function`——`snapshot()` 返回的是**序列化状态**（`{phase, steps, error}`），真正的方法在注册表上：`ctx.speechToText.prepare(id, options)`（进度仍从 `snapshot().providers[].preparation` 读）。`transcribe` 同理走 `resolve(spec) + transcribe(spec, signal)`（这一对自测里一直是对的）。

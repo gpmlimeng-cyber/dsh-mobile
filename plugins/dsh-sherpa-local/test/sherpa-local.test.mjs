@@ -407,3 +407,28 @@ test("多资产：缺哪个下哪个，已就绪的不重复下载（增量进�
     stub.restore();
   }
 });
+
+test("子进程库环境：只给专属目录，且不挂 termux-exec 预载（真机 linker64 档的 Xzs_Construct 实锤）", async () => {
+  // 真机实测：LD_LIBRARY_PATH 里带 <prefix>/lib 时，官方 Termux 版 CLI 经 linker64 启动会报
+  //   cannot locate symbol "Xzs_Construct" referenced by "/system/lib64/libunwindstack.so"
+  // （Termux 的 liblzma 顶掉了系统库依赖）。这里把「子进程看到的 LD_LIBRARY_PATH / LD_PRELOAD」
+  // 当成断言对象：假 CLI 把两个变量原样回吐成识别文本。
+  const dir = mkdtempSync(join(tmpdir(), "sherpa-env-"));
+  materialize(dir);
+  const script = join(dir, "fake-env");
+  writeFileSync(script, "#!/bin/sh\nprintf '{\"text\": \"LIB=%s PRE=%s\"}' \"$LD_LIBRARY_PATH\" \"$LD_PRELOAD\"\n");
+  chmodSync(script, 0o755);
+  const previous = { LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH, LD_PRELOAD: process.env.LD_PRELOAD };
+  process.env.LD_LIBRARY_PATH = "/prefix/lib";
+  process.env.LD_PRELOAD = "/prefix/lib/libtermux-exec-ld-preload.so";
+  try {
+    const provider = register({ modelDirectory: dir, assets: ASSETS, binary: script, libraryPath: "/dedicated/lib" });
+    const result = await provider.transcribe({ audio: tinyWav(), language: "zh" }, new AbortController().signal);
+    assert.match(result.text, /LIB=\/dedicated\/lib( |$)/, "LD_LIBRARY_PATH 必须只有专属目录");
+    assert.doesNotMatch(result.text, /\/prefix\/lib/, "前缀库不得出现在子进程的 LD_LIBRARY_PATH 里");
+    assert.match(result.text, /PRE=($| )/, "子进程不得挂 termux-exec 预载");
+  } finally {
+    if (previous.LD_LIBRARY_PATH === undefined) delete process.env.LD_LIBRARY_PATH; else process.env.LD_LIBRARY_PATH = previous.LD_LIBRARY_PATH;
+    if (previous.LD_PRELOAD === undefined) delete process.env.LD_PRELOAD; else process.env.LD_PRELOAD = previous.LD_PRELOAD;
+  }
+});

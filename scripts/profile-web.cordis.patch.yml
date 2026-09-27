@@ -150,12 +150,31 @@
     - id: android-vdisplay
       name: '@dsh-android/dsh-android-vdisplay'
 
-# deepcode 二开（2026-09-26，引擎 0.1.7-rc.2 起）：上游 experimental voice-input bundle 的平台白名单
-# 只含 darwin-arm64/x64、linux-arm64/x64、win32-x64 —— android-arm64 直接抛
-# "Local speech is unavailable for android-arm64"（实机表现：界面提示「语音输入准备失败」；该文案不进
-# engine.log，即不影响启动，只在触发语音输入时抛）。Android 无本地语音运行时、上游亦未发布 android 资产，
-# 故移动侧停用其 UI 入口与 sensevoice 后端；speech-to-text / api-speech-to-text 保留（无 UI 触发即不被调用）。
-- id: ui-voice-input
-  disabled: true
+# deepcode 二开（2026-09-27）：Android 语音输入 = 两个 provider，设置页可切换。
+#
+# 背景（实测）：上游唯一的本地 provider `speech-to-text-sensevoice` 依赖 `sherpa-onnx-node` 的原生
+# addon，而该项目**从未发布 android-arm64 绑定**（npm optionalDependencies 只有 darwin/linux/win），
+# 打开设置页只会得到「准备失败: Local speech is unavailable for android-arm64」。本仓改走两条可用路线：
+#   · whisper-local —— 本机 whisper.cpp（随包分发 CLI + 按需/随包模型），离线、免费；
+#   · mimo-asr      —— 小米 MiMo-V2.5-ASR 云端（走 llm-pi-ai 的 xiaomi-token-plan-cn 路由，同一条 key）。
+# 二者都注册进 `speechToText` 注册表；`defaultProvider` 指向本机 whisper（无需 key、无网络依赖）。
+# 注意：**voice-input bundle 必须在 profile 的 dsh.profile.bundles 里**——注册表 `speech-to-text`
+# 与对外 controller 都由该 bundle 插入；移除 bundle 会连带把注册表一起去掉，provider 只会一直
+# pending（waiting for service: speechToText）。见 docs/AGENTS/gotchas.md 191。
+- insert:
+    - id: whisper-local
+      name: dsh-whisper-local
+      config:
+        model: ggml-tiny.bin
+        threads: 4
+    - id: mimo-asr
+      name: dsh-mimo-asr
+      config:
+        apiKeyEnv: XIAOMI_TOKEN_PLAN_CN_API_KEY
+# 上游那个 Android 上不可能可用的本地 provider：停用（否则设置页会多出一个「准备失败」的选项）。
 - id: speech-to-text-sensevoice
   disabled: true
+# 默认走本机 whisper（离线）。要用云端识别，在「设置 → 语音输入」里切换即可（选择会写回 profile）。
+- id: speech-to-text
+  config:
+    defaultProvider: whisper-local

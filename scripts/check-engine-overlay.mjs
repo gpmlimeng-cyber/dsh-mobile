@@ -53,7 +53,7 @@ let presetsEntries = 0
 for (const patch of PATCH_REGISTRY.patches.filter((p) => p.scope === 'engine' && p.overlayCheck !== false)) {
   const marker = String(patch.marker ?? '').replace(/（.*$/, '').trim()
   if (marker.length === 0) continue
-  want.set(patch.target, { kind: 'patch-marker', name: patch.id, version: null, marker })
+  want.set(patch.target, { kind: 'patch-marker', name: patch.id, version: null, marker, featureAnchor: patch.featureAnchor ?? null })
 }
 
 const py = `
@@ -114,6 +114,7 @@ try {
 }
 
 const fails = []
+const nas = []
 let checked = 0
 // 防回归自检（0.13.8-b）：want 含非 package.json 目标（patch-marker 的 .js/.ts）时，扫描器必须真的
 // 取回过这类目标——否则「marker 面」会整体失效而无人知（本轮 7 项假红即此形态）。
@@ -137,7 +138,16 @@ for (const [path, meta] of want) {
     if (ver !== meta.version) fails.push(`[${meta.kind}] 版本不符: ${meta.name} 期望 ${meta.version} 实得 ${ver}`)
     checked++
   } else if (meta.kind === 'patch-marker') {
-    if (!content.includes(meta.marker)) fails.push(`[patch-marker] ${meta.name} 标记「${meta.marker}」缺席（补丁未施加或版本漂移）`)
+    // 上游移除/重写特性时的出口：该补丁登记了 featureAnchor（补丁的适用性锚点，与 apply-patches.mjs
+    // 的 applies() 同源同值），而目标文件里连锚点都不在场 ⇒ 说明上游已删掉这块特性，整条补丁判
+    // 「不适用」（与补丁框架的 NOT_APPLICABLE_DEP 一致），不计失败；锚点在场而 marker 缺席 = 真漂移。
+    if (!content.includes(meta.marker)) {
+      if (meta.featureAnchor && !content.includes(meta.featureAnchor)) {
+        nas.push(`[patch-marker] ${meta.name} 不适用（featureAnchor 不在场：上游已移除该特性）`)
+      } else {
+        fails.push(`[patch-marker] ${meta.name} 标记「${meta.marker}」缺席（补丁未施加或版本漂移）`)
+      }
+    }
     checked++
   } else if (meta.kind === 'vendor' || meta.kind === 'nested' || meta.kind === 'pin') {
     // W8：登记清单内的包顺带核验 license 字段（比对 engine-overlay-licenses.json）
@@ -212,6 +222,10 @@ for (const [path, meta] of want) {
 if (res.presets < 1) fails.push(`dsh-agent-presets 内置 presets/ 为空（${res.presets} 项）——0.1.2-rc.1 预设载体缺席`)
 else console.log(`  dsh-agent-presets presets/ 条目: ${res.presets}`)
 
+if (nas.length) {
+  console.log(`  不适用（上游已移除特性，非失败）${nas.length} 项:`)
+  for (const n of nas) console.log('    ~ ' + n)
+}
 if (fails.length) {
   console.error(`ENGINE-OVERLAY CHECK FAILED（${fails.length} 项）:`)
   for (const f of fails) console.error('  - ' + f)

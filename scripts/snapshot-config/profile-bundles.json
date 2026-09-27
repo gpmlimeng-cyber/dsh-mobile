@@ -1,0 +1,6 @@
+{
+  "$comment": "每个装配 profile 的 dsh.profile.bundles 必须包含的 bundle（inject-all 注入期合并，幂等）。出厂基座快照的 profile 只登记 [dsh-base, dsh-web-app]，而上游 experimental bundle 不会被 dsh-web-app 传递依赖进来（实测：dsh-web-app 的 127 个依赖里没有 voice-input）——语音输入所需的注册表 speech-to-text 与 controller api-speech-to-text 都由 voice-input bundle 插入，不登记就整条链缺失。",
+  "bundles": [
+    "@deepseek-ai/dsh-experimental-voice-input-bundle"
+  ]
+}

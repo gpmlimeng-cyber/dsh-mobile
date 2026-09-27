@@ -85,6 +85,20 @@ if (tar) {
     process.exit(2)
   }
   listing = new Set(members)
+  // 上游 0.1.7 重写了 dsh-client-modules 的组合模型（orderByModuleGraph + partitionComboRecords +
+  // buildBatch），补丁 combo-cache-A3 据其 applies() 判**不适用** ⇒ 运行时不再读取构建期 combo 缓存，
+  // 「每条 client.js 都有可用条目」这条覆盖度契约**失去对象**。此处按同一原则判「不适用」并打印原因，
+  // 而不是把「上游删掉了消费面」记成快照缺陷（与坑 182 同源）。取不到引擎文件时按旧口径检查（保守）。
+  const engineConsumesComboCache = (() => {
+    try {
+      const text = execFileSync(TAR, ['-xO', '-f', tar, 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-modules/lib/index.js'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+      return text.includes('sha1 content hash shortened to 12 hex chars')
+    } catch { return true }
+  })()
+  if (!engineConsumesComboCache) {
+    console.log('CHECK-COMBO-CACHE SKIPPED（不适用：引擎已重写组合模型，构建期 combo 缓存不再被读取）')
+    process.exit(0)
+  }
   const bundles = members.filter((m) => m.endsWith('/client.js'))
   if (bundles.length === 0) {
     console.error('CHECK-COMBO-CACHE FAILED：tar 内无 */lib/client.js（路径布局变更？）')

@@ -1,0 +1,13 @@
+{
+  "name": "dsh-mimo-asr",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Xiaomi MiMo-V2.5-ASR cloud provider for DSH voice input (speechToText registry)",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "license": "MIT"
+}

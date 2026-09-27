@@ -231,14 +231,44 @@ real-only 反证；判据全在设备事实上，证据不足判 `INCONCLUSIVE` 
 - **`patchReload` 特性被上游移除**：移动壳当初为 Android 强制 `startup` 档（避免 live reload 的
   冷启动开销）的优化**失去对象**（见坑 182）。若上游以其它机制保留了热重载，需在新机制上重新评估
   Android 侧的冷启动代价。
-- **F9 垫片未进官方快照构建链**：`node-addon-require-builtin-android-arm64` 的纯 JS 垫片目前只落在
-  「已装配的引擎树 + 设备侧运行时」（源码留档工作区 `tools/f9-android-shim/`），**没有**接进
-  `build-snapshot`/`inject-all` 的注入面。要做成可发布形态（新 APK 里也带），需把它作为额外包
-  注入快照（可复用 overlay 的 `extraPresent` 机制，见坑 180）。
+- **F9 垫片尚未接进官方快照构建链（但已进 APK 产物）**：`node-addon-require-builtin-android-arm64` 的纯 JS
+  垫片（源码留档工作区 `tools/f9-android-shim/`）已随本轮手工装配的引擎树**烘进可安装 APK 的快照**（装上即带，
+  不再依赖设备侧换树）；但它仍是**手工步骤**——`build-snapshot`/`inject-all` 的注入面里没有它，重跑官方
+  快照链不会自动生成。要做成可复现形态，需把它作为额外包注入（可复用 overlay 的 `extraPresent` 机制，见坑 180）。
+- **新引擎快照目前是「手工建树 + 手工补两步」的产物，官方快照链在本机未跑通**：`scripts/snapshot-config/engine-overlay.json`
+  已按 0.1.7-rc.2 树重写（310 包 / vendorTop 17 / 4 个未发布保留），但 `build-snapshot-013.mjs` 第 0e 步的
+  「逐包拉 npm + 补依赖闭包」在本机（arm64 Android）尚未完整验证过。本轮的可用路径是：按 overlay 拉树 →
+  打补丁 → `tools/normalize-modes.py` 归一权限 → `--degrade` 降级 → `tools/rebuild-snapshot-engine.py` 换子树
+  → `xz -T0`（见 build-and-env §3.6）。**缺口**：这条路没有进入 CI/官方链，重出快照需人工照做。
+- **`scripts/patches/**` 的改动尚未同步协调仓**：本轮改了 `apply-patches.mjs`（`applies` 归一 + 三条重复
+  `applies` 删除）与 `registry.json`（5 条 `featureAnchor`）。该目录是**双仓逐字节镜像面**（铁律 6）——
+  本地 `check-patch-mirror.mjs` 因对端树不在场而 SKIP，但**云端自包含构建用的仍是旧副本**，合并前必须
+  按「先本仓镜像 PR、再协调仓权威源 PR」的顺序同步。
+- **门禁的「第三态」目前只覆盖两条**：`check-engine-overlay`（marker vs `featureAnchor`）与
+  `check-perf-instrumentation`（`na()`）已能表达「上游已移除该特性」。其余门禁若将来也遇到「上游整块删掉
+  被测对象」，需按同一原则各自加 N/A 出口——**不得**用「放宽判据」或「永久 SKIP」代替（见坑 184）。
 - **`dsh plugin` 子命令在共存包里不可用**：快照里的 `pnpm` shim 烧的是主包前缀
   （`/data/user/0/com.dsharnessmobile.shell/…`），dev 包（`com.deepcode.shell`）调用必失败 ⇒
   版本豁免只能手写 `compatibility.json`（见坑 181）；同理其它走 pnpm 的插件管理动作在共存包里都不可用。
-- **本地语音输入在 Android 上不可用（0.1.7 起）**：上游 `dsh-experimental-voice-input-bundle` 的平台白名单
-  不含 `android-arm64`，且未发布 android 运行时/模型资产 ⇒ 移动侧已在 profile 补丁层停用其 UI 入口
-  （`ui-voice-input`）与 sensevoice 后端（`speech-to-text-sensevoice`），见坑 183。若上游日后提供 android
-  运行时或资产，去掉这两条 `disabled` 即可恢复。
+- **语音输入在 Android 上由「本机 whisper.cpp + 云端 MiMo」两条自研 provider 提供，上游 sensevoice 路线不可用**：
+  上游 `dsh-experimental-speech-to-text-sensevoice` 依赖 `sherpa-onnx-node` 的原生 addon，而该项目 npm 上
+  **只有 darwin/linux/win 绑定、android-arm64 从未发布** ⇒ 在 Android 上打开语音设置只会得到
+  「准备失败: Local speech is unavailable for android-arm64」。本仓新增 `plugins/dsh-whisper-local`
+  （本机离线：随包 whisper-cli + tiny 模型，实测 11 s 音频 ≈ 2 s）与 `plugins/dsh-mimo-asr`
+  （云端：复用 `llm-pi-ai` 的 `xiaomi-token-plan-cn` 路由与 key，实测 ≈ 1.1 s），默认走本机 whisper。
+  三件必要件（bundle 登记 / provider 后端 / 壳侧麦克风双门）与实测判据见坑 193-195。
+- **语音后端的二进制与模型由「工作区资产」注入，尚未进 CI/官方链**：`whisper-cli` 是本机原生编译产物
+  （链上不该为此装 500 MB 工具链），模型是 77 MB 二进制；二者经 `tools/snapshot-assets.json` +
+  `tools/add-snapshot-assets.py` 在「引擎树换好之后、压缩之前」注入快照，**与 F9 垫片同族**（本地可复现、
+  云端链不产生）。要做成可发布形态有两条路：把 whisper.cpp 构建纳入快照链（需给链装工具链），或把
+  CLI/模型作为 Release 资产随构建下载。
+- **语音识别是「整段录音 → 整段推理」，不是流式**：provider 契约本来就是「一次录音一次 transcribe」，
+  本仓两条实现都按此；长句子的实时字幕/边说边出字需要另做（上游亦无此能力）。
+- **上游 sensevoice provider 仍会出现在语音设置页（失败态）**：`- id: speech-to-text-sensevoice / disabled: true`
+  对 **bundle 插入行不生效**（成因见坑 191），故设置页可能列出三个 provider、其中 SenseVoice 显示「准备失败」。
+  默认选择是我们声明的 `whisper-local`，不影响使用。
+- **升级安装的 profile `package.json` 走「并集」合并 ⇒ 工厂已删除的 bundle 在 live 侧永久残留**：
+  `SnapshotTransaction` 对 `dsh.profile.bundles` 取并集（同名冲突保留 live）。实测：dev 包 live 的 bundles
+  里带着 `voice-input-bundle` / `experimental-agent-team-profile` / `experimental-auto-review` 三项工厂从未
+  声明的条目，升级后仍在 ⇒ 语音输入页面在**升级设备**上依旧出现，而全新安装不会（见坑 191/192）。要彻底
+  收敛，需要壳侧在合并时按工厂参考**剪除**未知 bundle（属独立改动，涉及快照事务语义，未做）。

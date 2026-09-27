@@ -38,6 +38,9 @@ const skip = (msg) => {
   if (REQUIRE) { console.log('FAIL  SKIP(#' + skipped + ') ' + msg + '（--require：不得以 SKIP 结案）'); failures.push(msg) }
   else console.log('SKIP(#' + skipped + ')  ' + msg)
 }
+// 不适用：被测特性在上游已被移除（对账对象不复存在），不是「本轮没测到」。与 SKIP 的区别是
+// 「永远无需测」，因此 --require 也不判失败（与补丁框架 applies()/NOT_APPLICABLE_DEP 同一原则，坑 182）。
+const na = (msg) => { console.log('N/A   ' + msg) }
 
 // ── 1. 度量入口 ─────────────────────────────────────────────────────────────
 const countCompose = join(ROOT, 'scripts', 'perf', 'count-compose.mjs')
@@ -136,7 +139,20 @@ const readFromTar = (tar, member) => {
 if (!tarPath) {
   skip('无快照可对账（--snapshot <tar> 或 ' + autoTar + '）——A1 出厂值未在真实产物上核对')
 } else {
-  for (const profile of ['web', 'headless']) {
+  // 上游 0.1.7 起移除 `patchReload`（PROFILE_TEMPLATES 里该键被删、app-boot 无热重载开关）⇒
+  // A1 出厂值对账**失去对象**：快照侧根本无从声明该键。此时判「不适用」并打印原因，
+  // 而不是把「上游删特性」记成快照缺陷（与补丁框架 applies() 同一原则，见坑 182）。
+  // 取不到引擎文件时按旧口径对账（保守，不放松判据）。
+  const engineStillHasPatchReload = (() => {
+    try {
+      const probe = readFromTar(tarPath, 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js')
+      return probe === null ? true : probe.includes('patchReload')
+    } catch { return true }
+  })()
+  if (!engineStillHasPatchReload) {
+    na('A1 出厂值对账不适用：引擎已移除 patchReload（上游 0.1.7 起），快照侧无从声明该键')
+  } else {
+    for (const profile of ['web', 'headless']) {
     const member = 'home/.dsh/profiles/' + profile + '/package.json'
     const text = readFromTar(tarPath, member)
     if (text === null) { skip('快照内缺 ' + member + '（' + tarPath + '）'); continue }
@@ -150,6 +166,7 @@ if (!tarPath) {
     } else {
       skip('A1 出厂声明值未核对：' + profile + ' patchReload=' + JSON.stringify(value)
         + '（当前快照是 A1 前的产物；重出快照后本断言自动转 PASS，构建/发布链以 --require 强制）')
+    }
     }
   }
 }

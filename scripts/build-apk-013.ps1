@@ -293,11 +293,11 @@ foreach ($abi in @('arm64', 'x86_64')) {
         Write-Host "== 单 pass 注入（@dsh-android + undo/market + 权威 patch）（$abi）=="
         # ST-05：--all-profiles = 权威 patch 与注入包覆盖全部真实装配 profile（web + headless；
         # 负控 profile headless-bad 由 inject-all.py 显式跳过）。此前只写 web，headless 停在旧值。
-        python (Join-Path $Root "scripts\inject-all.py") $snap (Join-Path $work "snap-final2.tar.xz") (Join-Path $Root "scripts\profile-web.cordis.patch.yml") --dsh-android @pluginDirs --external $undoDeg $marketDeg --all-profiles --combo-cache-delta $comboDelta 2>&1
+        python (Join-Path $Root "scripts\inject-all.py") $snap (Join-Path $work "snap-final2.tar.xz") (Join-Path $Root "scripts\profile-web.cordis.patch.yml") --dsh-android @pluginDirs --external @(@($undoDeg, $marketDeg) + @($externDirs | Where-Object { $_ -ne $undo -and $_ -ne $market })) --all-profiles --combo-cache-delta $comboDelta 2>&1
         if ($LASTEXITCODE -ne 0) { Deny-Abi $abi "注入失败"; continue }
         # 防回归（审校 C4 2026-08-23）：patch 挂载集 ⊇ 注入集——缺条目（如 linux-env 漏挂）直接拒打包
         Write-Host "== 挂载集校验（$abi）=="
-        node (Join-Path $Root "scripts\check-patch-mounts.mjs") (Join-Path $Root "scripts\profile-web.cordis.patch.yml") @pluginDirs $undo $market 2>&1 | Select-Object -First 4
+        node (Join-Path $Root "scripts\check-patch-mounts.mjs") (Join-Path $Root "scripts\profile-web.cordis.patch.yml") @pluginDirs @externalDirs 2>&1 | Select-Object -First 4
         if ($LASTEXITCODE -ne 0) { Deny-Abi $abi "patch 挂载集校验失败"; continue }
         # 注入面成员完整性（P0：包内新增文件曾被静默丢弃 → tar 里 import 悬空 → 设备侧引擎启动即死）
         Write-Host "== 注入成员完整性门禁（$abi）=="
@@ -374,8 +374,10 @@ foreach ($abi in @('arm64', 'x86_64')) {
     # 覆盖运行树的预打补丁副本，必须与快照同源——否则「构建期 marker 全绿、设备上补丁被改回去」。
     # FX-208.1：按当前 ABI 传参；--require = 快照/资产缺席即失败，不得 SKIP exit 0（旧实现把构建机状态
     # 变成门禁结果）。ST-06：本调用原先落在 foreach 之外（$abi 未定义恒走 x86_64 默认值）——已移进循环。
+    # 显式传 $snap：本门禁默认取 .deploy-tmp\snapshot-013\<abi>\snapshot.tar.xz，若换过基座
+    # （例如手工装入新引擎快照）就会拿陈旧快照比对 ⇒ 假红。默认档 $snap 即该固定路径，语义不变。
     Write-Host "== 运行时补丁资产门禁（$abi，严格）=="
-    node (Join-Path $Root "scripts\check-runtime-assets.mjs") $abi --require 2>&1
+    node (Join-Path $Root "scripts\check-runtime-assets.mjs") $abi --snapshot $snap --require 2>&1
     if ($LASTEXITCODE -ne 0) { Deny-Abi $abi "运行时补丁资产过期或缺失（从快照重新生成 assets/patched）"; continue }
 
     # A1 出厂声明值对账（P-AC-01，--require 严格档）：注入后快照的 profile 清单必须带 patchReload 出厂值。

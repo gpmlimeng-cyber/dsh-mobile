@@ -18,6 +18,7 @@ import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.JsResult
 import android.webkit.ValueCallback
+import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -27,6 +28,8 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.Toast
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -115,6 +118,9 @@ class MainActivity : ComponentActivity() {
   /** 本次会话是否已经为通知权限弹过一次（S1-11：不重复弹、且只在真需要时弹）。 */
   private var notifPermissionAsked = false
 
+  /** 待决的页面音频采集请求：Android 权限回调回来后才能 grant/deny。 */
+  private var pendingAudioCaptureRequest: PermissionRequest? = null
+
   companion object {
     private const val TAG = "dsh-shell"
 
@@ -127,6 +133,9 @@ class MainActivity : ComponentActivity() {
      * 应用的哪类通知；现在名称/说明走 strings.xml（见 ds_notify_channel_name/desc）。
      */
     private const val NOTIF_CHANNEL_ID = "dsh"
+
+    /** RECORD_AUDIO 运行时申请的请求码（语音输入，唯一使用方）。 */
+    private const val REQ_RECORD_AUDIO = 7401
 
     /**
      * §2.3（0.14.1 块C）：主 WebView 背景色（中性深灰）。未设时为默认白，白屏与「正常空页」
@@ -541,6 +550,28 @@ class MainActivity : ComponentActivity() {
     super.onStop()
   }
 
+  /**
+   * deepcode 二开（2026-09-27）：RECORD_AUDIO 运行时权限结果 → 回填页面的采集请求。
+   *
+   * 只处理自己的请求码：其它权限路径（SAF/通知等）不走这里，避免今后新增权限时误吞结果。
+   */
+  override fun onRequestPermissionsResult(
+    requestCode: Int, permissions: Array<String>, grantResults: IntArray,
+  ) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    if (requestCode != REQ_RECORD_AUDIO) return
+    val request = pendingAudioCaptureRequest ?: return
+    pendingAudioCaptureRequest = null
+    val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+    if (granted) {
+      request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+      LogCollector.log(TAG, "microphone capture granted after user approval")
+    } else {
+      request.deny()
+      LogCollector.log(TAG, "microphone capture denied by user")
+    }
+  }
+
   override fun onDestroy() {
     // #128 L1：控制面不再持有已销毁 Activity 的 WebView。
     webViewRef = null
@@ -829,6 +860,42 @@ class MainActivity : ComponentActivity() {
       ): Boolean {
         // 文件上传/图片选择委托 MediaPickController（系统文件选择器或相册）。
         return mediaPickerController.handleFileChooser(filePathCallback, fileChooserParams)
+      }
+
+      /**
+       * deepcode 二开（2026-09-27）：麦克风授权（语音输入）。
+       *
+       * 页面侧语音输入走 `getUserMedia({audio:true})`；WebView 默认**拒绝**一切权限请求，于是
+       * 用户只会看到「麦克风权限未开启，请在浏览器和系统设置中允许访问」——而壳侧此前既没有
+       * RECORD_AUDIO 声明、也没有本方法（实测：两处都缺）。
+       *
+       * 这里是「双门」的第二道：Android 运行时权限（危险权限）+ WebView 的 capture 授权。
+       * 顺序必须是「先拿到系统权限，再 grant」——反过来 grant 会被内核层拒掉。用户拒绝系统权限时
+       * deny 请求（页面会显示失败，而不是静默失败）。
+       *
+       * 只放行音频采集：摄像头/麦克风以外的资源（如 MIDI/受保护媒体）一律 deny，不放宽攻击面。
+       */
+      override fun onPermissionRequest(request: PermissionRequest) {
+        val wantsAudio = request.resources.any { it == PermissionRequest.RESOURCE_AUDIO_CAPTURE }
+        if (!wantsAudio) {
+          request.deny()
+          return
+        }
+        val granted = ContextCompat.checkSelfPermission(
+          this@MainActivity, Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+          request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+          LogCollector.log(TAG, "microphone capture granted to page")
+          return
+        }
+        // 同一时刻只挂一个待决请求：新请求到达时先拒掉旧的（避免挂住不回调）。
+        pendingAudioCaptureRequest?.deny()
+        pendingAudioCaptureRequest = request
+        LogCollector.log(TAG, "microphone capture pending: requesting RECORD_AUDIO from user")
+        ActivityCompat.requestPermissions(
+          this@MainActivity, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_RECORD_AUDIO,
+        )
       }
 
       override fun onJsAlert(view: WebView, url: String, message: String, result: JsResult): Boolean {

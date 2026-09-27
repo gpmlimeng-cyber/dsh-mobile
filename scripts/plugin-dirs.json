@@ -14,6 +14,8 @@
   ],
   "externals": [
     "vendor/dsh-undo-savepoint",
-    "vendor/dshmarketplace-plugin"
+    "vendor/dshmarketplace-plugin",
+    "plugins/dsh-whisper-local",
+    "plugins/dsh-mimo-asr"
   ]
 }

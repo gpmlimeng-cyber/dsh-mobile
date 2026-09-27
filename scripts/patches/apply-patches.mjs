@@ -1361,8 +1361,8 @@ const IMPLS = {
     file: 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js',
     scope: 'engine',
     // 上游 0.1.7 起移除 `patchReload`（PROFILE_TEMPLATES 与归一化逻辑一并消失）⇒ 本补丁失去对象。
-    // 保留实现以兼容 0.1.5 及更早引擎；目标树无该词时整条判「不适用」而非失败。
-    applies: (s) => s.includes('patchReload'),
+    // 保留实现以兼容 0.1.5 及更早引擎；适用性锚点 patchReload 登记在 registry.json 的 featureAnchor
+    // （apply-patches 归一为 applies），目标树无该词时整条判「不适用」而非失败。
     check: (s) => (s.match(/dsh-mobile patchReload normalization \(N1\)/g) || []).length === 2,
     apply: (s) => {
       if ((s.match(/dsh-mobile patchReload normalization \(N1\)/g) || []).length === 2) return s
@@ -1504,7 +1504,7 @@ const IMPLS = {
     // 上游 0.1.7 重写 client-modules 组合模型（orderByModuleGraph + partitionComboRecords + buildBatch），
     // 本补丁针对旧模型（compose() 逐条 buildCombo 循环 + 构建期 combo 缓存键）⇒ 明确不适用。
     // 移植等价物需要在新模型上重做「启动期 combo 预计算 + 命中查询」，属独立工程（见 known-gaps）。
-    applies: (s) => s.includes('/** sha1 content hash shortened to 12 hex chars (combo / graph / rebuilt-artifact rev). */'),
+    // 适用性锚点（sha1 JSDoc）登记在 registry.json 的 featureAnchor，apply-patches 归一为 applies。
     check: (s) => s.includes('dsh-mobile combo cache (A3)')
       && s.includes('dsh-mobile combo cache hit (A3)')
       && s.includes('dsh-mobile combo cache report (A3)'),
@@ -1673,7 +1673,7 @@ const IMPLS = {
     scope: 'engine',
     // 同 A3：旧模型 compose() 里「无条件为每条记录建单条」的那行已不存在（新版多带 readSourceMap 参数，
     // 且单条响应改由 responses/previousBatchResponses 兜底）⇒ 明确不适用。
-    applies: (s) => s.includes('const artifact = buildCombo([record], record.entry.rev);'),
+    // 适用性锚点（compose 内无条件建单条那行）登记在 registry.json 的 featureAnchor。
     check: (s) => s.includes('dsh-mobile combo single lazy (A5)')
       && s.includes('dshMobileSingleComboResponse')
       // 关键反 no-op：compose() 里「无条件为每条记录建单条」的调用必须已消失。
@@ -2229,6 +2229,15 @@ const IMPLS = {
       return s
     },
   },
+}
+
+// ── applies 归一（0.1.7 起）：适用性锚点的唯一真源是 registry.json 的 featureAnchor ──
+// 同一锚点原先要在登记表（门禁 check-engine-overlay 用）和实现（补丁框架用）各抄一份，两处漂移
+// 就是静默误判（一边判不适用、一边判失败）。实现自带 applies 时以实现为准（复杂/多锚点情形留口）。
+for (const [id, impl] of Object.entries(IMPLS)) {
+  if (typeof impl.applies === 'function') continue
+  const anchor = registry.patches.find((p) => p.id === id)?.featureAnchor
+  if (typeof anchor === 'string' && anchor.length > 0) impl.applies = (s) => s.includes(anchor)
 }
 
 // ── 登记表 ↔ 实现 交叉校验（漂移即拒）──

@@ -21,6 +21,13 @@
   <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
   <!-- 0.13.2 W7：悬浮球（系统级悬浮窗，用户经设置页授予；OverlayController 引导）。 -->
   <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+  <!-- deepcode 二开（2026-09-27）：语音输入。WebView 的 getUserMedia(audio) 需要两件事同时成立——
+       ① 本权限被用户授予（危险权限，运行时申请，见 MainActivity.onPermissionRequest）；
+       ② 壳侧在 WebChromeClient.onPermissionRequest 里 grant(RESOURCE_AUDIO_CAPTURE)。
+       只做其中一件都会得到「麦克风权限未开启」的页面提示（实测）。 -->
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <!-- 无麦克风的设备（模拟器/部分平板）不得因此被商店或安装器排除。 -->
+  <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
   <application
     android:label="@string/app_name"

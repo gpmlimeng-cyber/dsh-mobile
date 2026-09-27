@@ -130,6 +130,7 @@ node scripts/build-apk.mjs --abi arm64 --suffix <sfx>    # 门禁 → 注入 →
 | 工作树行尾噪声 | `git status` 的 ` M` 与 `check-patch-mirror` 的「仅行尾差异」WARN 常来自 autocrlf（一侧检出为 CRLF），**不是**内容漂移。先逐字节复核（`cmp a b` / `git diff --ignore-cr-at-eol`）再决定要不要动文件，别按噪声改内容 | 铁律 5/6 |
 | arm64 真机构建（壳内） | 无 `pwsh`：直接 `node scripts/build-apk.mjs`；工具链（JDK17 / aapt2 / aidl / zipalign / apksigner / adb）取 Termux 源 + 自实现，SDK 自带 x86_64 工具需覆盖；后台任务不继承 `$PREFIX`、`/tmp` 不可写，临时与日志一律落工作区 | 坑 172-178 |
 | 共存安装（二开） | `-PapplicationIdOverride=<id>`（默认 `com.deepcode.shell`）与主包并存；`versionName` 用 `-PversionNameSuffix` 区分；两包各自授权 | 上文「共存安装」 |
+| 壳内跑门禁必须先修 execPath | `NODE_OPTIONS=--require <工作区>/tools/fix-execpath.cjs`。本机 `process.execPath` = `linker64` 且 `execve('/bin/sh')` 被 termux-exec 重写 ⇒ 门禁里 `spawnSync(process.execPath)`/`execSync` 一律失败，且**报错文案会指向别处**（例：`check-browser-syntax-floor` 报「esbuild 对本平台不可用」） | 坑 172、**坑 186** |
 
 ### 3.5 引擎升级（就地升级 dev 包运行时；2026-09-26 打通）
 
@@ -159,3 +160,38 @@ node scripts/build-apk.mjs --abi arm64 --suffix <sfx>    # 门禁 → 注入 →
 > 在 `run-as` 里手工跑引擎 CLI（诊断用）必须带全套环境，否则是**假错误**：`LD_LIBRARY_PATH=<prefix>/lib`、
 > `LD_PRELOAD=<prefix>/lib/libtermux-exec-ld-preload.so`、`PATH=<prefix>/bin:/system/bin`、`DSH_HOME=<该包 home>/.dsh`、
 > `OPENSSL_CONF=<prefix>/etc/tls/openssl.cnf`（缺最后一条报 `OpenSSL configuration error`，缺前两条报 `libz.so.1 not found`）。
+
+### 3.6 把新引擎烘进可安装 APK（二开产物；2026-09-26 打通）
+
+适用：出一个**装上就自带新引擎**的 APK（不依赖设备侧手工换树）。基座用已注入的
+`.deploy-tmp/build-arm64/snap-final2.tar.xz`（0.1.5 引擎 + 全部插件注入，163 MB），只换引擎子树。
+
+1. **备好引擎树**（§3.5 步 1-5 全绿）后必须补两步——构建链原本在**快照构建段**做，手工建树会整段跳过（坑 185）：
+   - `python3 tools/normalize-modes.py <stageRoot>`：目录 0o700、ELF 或 `#!` 文件 0o700、其余 0o600；复跑须 `changed=0`。
+   - `node scripts/check-browser-syntax-floor.mjs --degrade --stage <stageRoot>` 原地降级到 chrome87，随后
+     `--scan <stageRoot>` 必须全绿（判据 1 零违规 + 判据 2 差分归零）。
+2. **换引擎子树**：`python3 tools/rebuild-snapshot-engine.py <base.tar.xz> <engineTree> <out.tar>`（流式：跳过并重写
+   `usr/lib/node_modules/@deepseek-ai/dsh` 前缀下的全部成员，其余成员原样透传；`<engineTree>` 指 `.../dsh` 目录本身）。
+   再 `xz -T0 -6` 压回 `.tar.xz`（遵守多线程铁律）。本机实测：993.7 MB tar → 190.5 MB xz，压缩约 30 分钟。
+3. **出 APK**：`bash tools/build-dev-apk.sh <snap.tar.xz>`（工作区脚本，只把环境钉死后调
+   `node scripts/build-apk.mjs --abi arm64 --snapshot <tar>`）。本机私有环境（后台任务不继承 `$PREFIX`，一律绝对路径）：
+   `ANDROID_HOME=$PREFIX/lib/android-sdk`、`JAVA_HOME=$PREFIX/lib/jvm/java-17-openjdk`、`GRADLE_USER_HOME=~/.gradle`、
+   `PATH` 首位放工作区 `tools/bin`（tar 包装器：xz 子进程要 `LD_PRELOAD`）、
+   `NODE_OPTIONS=--require <工作区>/tools/fix-execpath.cjs`（**必须**，否则门禁里凡是
+   `spawnSync(process.execPath)` 都失败——坑 186）。`--snapshot` 档跑完整门禁集（注入前 + 注入后 20 余条）+
+   `gradle :app:assembleDebug`；注入链会把 `scripts/profile-web.cordis.patch.yml` 写给全部装配 profile
+   （声音输入停用等改动随之进包），并按流程做权限归一化。
+3.5 **语音输入资产（工作区注入，2026-09-27）**：本机 STT 后端 `whisper-cli` 是本机原生编译产物、模型是
+   77 MB 二进制，二者都不进仓、也不在 inject-all 的注入面里。做法：`tools/add-snapshot-assets.py <引擎换好后的tar> <新tar> tools/snapshot-assets.json`
+   （成员：`usr/bin/whisper-cli`、`usr/lib/dsh-whisper/{libwhisper,libggml*,libc++_shared}.so` 及其 `SONAME` 符号链接、
+   `home/.dsh/speech-to-text/whisper/ggml-tiny.bin`；权限按内容给：ELF→0o700、数据→0o600）。
+   两个 provider 插件本体走正常注入链（`scripts/plugin-dirs.json` 的 `externals`），profile 行与
+   `defaultProvider` 在 `scripts/profile-web.cordis.patch.yml` 末尾；**voice-input bundle 由
+   `scripts/snapshot-config/profile-bundles.json` 保证登记进 profile 的 `dsh.profile.bundles`**（否则注册表缺失）。
+   壳侧还需 `AndroidManifest.xml` 的 `RECORD_AUDIO` + MainActivity 的 `onPermissionRequest`（两者缺一，页面都会说
+   「麦克风权限未开启」）。踩坑与判据见坑 193-195。
+
+4. **装机（共存包）**：`adb push` APK 到 `/data/local/tmp` 后走 MIUI 安装器
+   `am start -n com.miui.packageinstaller/com.miui.packageInstaller.InstallStart -a android.intent.action.VIEW -d file:///data/local/tmp/<apk> -t application/vnd.android.package-archive`
+   （`adb install` 在本机被「USB 安装」闸门拒，坑 174）。装完核对：`ENGINE_PORT` 该包独占（主包 3080 / dev 包 3081）、
+   引擎版本 `0.1.7-rc.2`、`boot-diag.log` 出 `page-ready`。

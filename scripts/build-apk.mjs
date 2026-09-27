@@ -284,7 +284,9 @@ try {
       join(ROOT, 'scripts', 'inject-all.py'), snapSrc, join(work, 'snap-final2.tar.xz'),
       join(ROOT, 'scripts', 'profile-web.cordis.patch.yml'),
       '--dsh-android', ...pluginDirs,
-      '--external', undoDeg, marketDeg,
+      // externals 全体：undo/market 走「暂存降级副本」，其余（如语音 provider 插件）直接注入。
+      // 此前只传 undo/market ⇒ plugin-dirs.json 里新增的 external 只过门禁、进不了快照（实测）。
+      '--external', undoDeg, marketDeg, ...externalDirs.filter((p) => p !== undo && p !== market),
       '--all-profiles',
       '--combo-cache-delta', comboDelta,
     ])
@@ -296,7 +298,9 @@ try {
 
   // ---- 4. 门禁（注入后；与 build-apk-013.ps1 同一份门禁集）----
   log('门禁：patch 挂载集校验（双向差集）…')
-  run('node', [gate('check-patch-mounts.mjs'), join(ROOT, 'scripts', 'profile-web.cordis.patch.yml'), ...pluginDirs, undo, market])
+  // 传**全部** externals（不只 undo/market）：新增的 external 插件同样被权威 patch 挂载，
+  // 漏传会被反向差集判红（实测：dsh-whisper-local / dsh-mimo-asr 挂载了却不在注入面内）。
+  run('node', [gate('check-patch-mounts.mjs'), join(ROOT, 'scripts', 'profile-web.cordis.patch.yml'), ...pluginDirs, ...externalDirs])
   // 注入面成员完整性（P0）：包内新增文件必须随注入进 tar，且相对导入不得悬空
   log('门禁：注入成员完整性（成员集合 + 相对导入可解析）…')
   run('node', [gate('check-inject-completeness.mjs'), snapIn])
@@ -328,7 +332,10 @@ try {
   log('门禁：ELF 架构…')
   run('node', [gate('elf-check.mjs'), snapIn, ABI])
   log('门禁：运行时补丁资产（严格，快照缺席即失败）…')
-  run('node', [gate('check-runtime-assets.mjs'), ABI, '--require'])
+  // 必须显式传快照：本门禁默认取 `.deploy-tmp/snapshot-013/<abi>/snapshot.tar.xz`，而 `--snapshot <tar>`
+  // 档的输入在别处 ⇒ 不传就会拿**陈旧快照**去比对资产，报「资产与快照不同源」的假红（本机实测：
+  // 手装 0.1.7 快照时它读的是 9-24 的 0.1.5 快照）。语义不变：默认档 snapSrc 就是那个固定路径。
+  run('node', [gate('check-runtime-assets.mjs'), ABI, '--snapshot', snapSrc, '--require'])
   // A1 出厂声明值对账（P-AC-01，严格档）：注入后快照的 profile 清单必须带 patchReload 出厂值。
   log('门禁：性能度量入口与 A1 出厂值（严格）…')
   run('node', [gate('check-perf-instrumentation.mjs'), '--require', '--snapshot', snapIn, '--abi', ABI])

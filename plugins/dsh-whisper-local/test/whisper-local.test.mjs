@@ -44,6 +44,17 @@ test("info：host-local + auto/zh/en/yue 等语言提示", () => {
   for (const language of ["auto", "zh", "en", "yue"]) assert.ok(provider.info.languages.includes(language), language);
 });
 
+test("启动阶梯：直连 → linker64 → sh -c，顺序与 argv 形态固定（app 私有 ELF 的 exec 兜底）", () => {
+  // 真机实锤（2026-09-27）：Android 15+ 禁止 app 私有目录 ELF 直接 execve ⇒ spawn EACCES。
+  // 壳侧起引擎自己就是「直连失败→linker64」，本插件用同一套阶梯；这里是它的回归锚点：
+  // 顺序不能变（直连优先，避免无谓地绕一层 loader），argv 形态必须正确（sh 档要 exec "$0" "$@"）。
+  const ladder = plugin.launchLadder('/x/whisper-cli', ['-m', 'model', '-f', 'a.wav']);
+  assert.deepEqual(ladder.map((c) => c.how), ['direct', 'linker64', 'sh']);
+  assert.deepEqual(ladder[0], { how: 'direct', cmd: '/x/whisper-cli', argv: ['-m', 'model', '-f', 'a.wav'] });
+  assert.deepEqual(ladder[1], { how: 'linker64', cmd: '/system/bin/linker64', argv: ['/x/whisper-cli', '-m', 'model', '-f', 'a.wav'] });
+  assert.deepEqual(ladder[2].argv, ['-c', 'exec "$0" "$@"', '/x/whisper-cli', '-m', 'model', '-f', 'a.wav']);
+});
+
 test("模型缺失：preparation 报 unprepared，transcribe 给可执行错误（不 spawn 注定失败的进程）", async () => {
   const dir = mkdtempSync(join(tmpdir(), "whisper-missing-"));
   const provider = register({ modelDirectory: dir, model: "ggml-tiny.bin" });

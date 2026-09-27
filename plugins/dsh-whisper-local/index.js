@@ -42,7 +42,15 @@ const DEFAULTS = {
    * libc++ 会波及快照里所有 Termux 二进制。故只给本 CLI 子进程前置一个专属目录（LD_LIBRARY_PATH
    * 优先于二进制 RUNPATH），互不影响。
    */
-  libraryPath: "/data/data/com.deepcode.shell/files/usr/lib/dsh-whisper",
+  libraryPath: "",
+  /**
+   * 启动方式：`auto`（默认，按阶梯回退）/ `direct` / `linker64` / `sh`。
+   * 为什么需要阶梯：Android 15+（部分 ROM 更早）**禁止 app 私有目录里的 ELF 直接 execve**
+   * （真机实测 `spawn whisper-cli EACCES`）。壳侧起引擎自己就是「直连失败→ `/system/bin/linker64`
+   * 重试」（EngineManager.startWithArgs），termux-exec 的 execve 钩子也只覆盖它认识的那条路；
+   * 本插件自带同款阶梯，三种走法任一可用即可，不再依赖父进程环境是否恰好带钩子。
+   */
+  launcher: "auto",
   model: "ggml-tiny.bin",
   /** 模型下载源前缀（按序尝试）。默认 hf-mirror：国内可达性优于 huggingface.co。 */
   modelOrigins: [
@@ -82,6 +90,59 @@ function wavSeconds(bytes) {
 }
 
 const round = (value) => (Number.isFinite(value) ? Math.round(value * 1000) / 1000 : 0);
+
+const SYSTEM_LINKER = "/system/bin/linker64";
+const SYSTEM_SH = "/system/bin/sh";
+
+/**
+ * 启动候选阶梯（顺序即优先级）。导出为纯函数：这是「app 私有 ELF 怎么起得来」的回归锚点。
+ * @returns [{cmd, argv, how}] —— how 仅用于诊断输出
+ */
+export function launchLadder(binary, args) {
+  return [
+    { how: "direct", cmd: binary, argv: [...args] },
+    { how: "linker64", cmd: SYSTEM_LINKER, argv: [binary, ...args] },
+    { how: "sh", cmd: SYSTEM_SH, argv: ["-c", 'exec "$0" "$@"', binary, ...args] },
+  ];
+}
+
+/**
+ * 依次尝试阶梯；返回第一个**真正启动成功**的句柄与档位名。
+ * 判据用 Node 的 'spawn' / 'error' 事件：只有启动失败才降级（进程起来之后的失败不换档）。
+ */
+async function spawnWithLadder(binary, args, options, preferred) {
+  const all = launchLadder(binary, args);
+  const order = preferred && preferred !== "auto"
+    ? [...all.filter((c) => c.how === preferred), ...all.filter((c) => c.how !== preferred)]
+    : all;
+  let lastError = null;
+  const tried = [];
+  for (const candidate of order) {
+    const child = spawn(candidate.cmd, candidate.argv, options);
+    const ok = await new Promise((resolve) => {
+      let settled = false;
+      const onError = (error) => {
+        if (settled) return;
+        settled = true;
+        lastError = error;          // 保留最后一次失败的实参给调用方诊断
+        resolve(false);
+      };
+      const onSpawn = () => {
+        if (settled) return;
+        settled = true;
+        child.removeListener("error", onError);   // 成功的子进程不留悬挂的 error 探针
+        resolve(true);
+      };
+      child.once("error", onError);
+      child.once("spawn", onSpawn);
+    });
+    tried.push(candidate.how);
+    if (ok) return { child, how: candidate.how, tried };
+  }
+  const error = lastError ?? new Error("无法启动");
+  error.tried = tried;
+  throw error;
+}
 
 /** 模型就绪状态机：模型在 → ready；不在 → unprepared（prepare() 才下载，幂等、可取消）。 */
 class ModelPreparation {
@@ -231,48 +292,67 @@ export function apply(ctx, config = {}) {
     if (!audio || audio.byteLength === 0) throw new Error("Whisper：录音为空");
     const phase = preparation.snapshot().phase;
     if (phase !== "ready" && phase !== "standby") throw new Error("Whisper：模型尚未就绪，请先在语音设置里准备模型");
+    // 先做存在性检查：否则「二进制缺失」会走到 sh 档并退化成「退出码 127」，用户看不出真因
+    if (!existsSync(settings.binary)) throw new Error(`Whisper：无法启动 ${settings.binary}（文件不存在）`);
     const hint = WHISPER_LANGUAGE[language] ?? (info.languages.includes(language) ? language : "auto");
     const wav = join(tmpRoot, `dsh-whisper-${process.pid}-${Date.now()}.wav`);
     writeFileSync(wav, Buffer.from(audio));
     const startedAt = Date.now();
     try {
+      const args = ["-m", preparation.modelPath, "-f", wav, "-l", hint, "-t", String(settings.threads), "--no-timestamps", "--no-prints"];
+      // 共享库与 loader 钩子：whisper 专属目录在前（同源 libc++），再补快照前缀 lib，最后继承原值。
+      const childEnv = {
+        ...process.env,
+        LD_LIBRARY_PATH: [settings.libraryPath, join(dirname(settings.binary), "..", "lib"), process.env.LD_LIBRARY_PATH]
+          .filter(Boolean)
+          .join(":"),
+      };
+      if (!childEnv.LD_PRELOAD) {
+        const preload = join(dirname(settings.binary), "..", "lib", "libtermux-exec-ld-preload.so");
+        if (existsSync(preload)) childEnv.LD_PRELOAD = preload;
+      }
       const text = await new Promise((resolve, reject) => {
-        const child = spawn(
+        let child;
+        const launched = spawnWithLadder(
           settings.binary,
-          ["-m", preparation.modelPath, "-f", wav, "-l", hint, "-t", String(settings.threads), "--no-timestamps", "--no-prints"],
-          {
-            stdio: ["ignore", "pipe", "pipe"],
-            env: {
-              ...process.env,
-              LD_LIBRARY_PATH: [settings.libraryPath, process.env.LD_LIBRARY_PATH].filter(Boolean).join(":"),
-            },
-          },
+          args,
+          { stdio: ["ignore", "pipe", "pipe"], env: childEnv },
+          settings.launcher,
         );
-        let out = "";
-        let err = "";
-        const timer = setTimeout(() => {
-          child.kill("SIGKILL");
-          reject(new Error(`Whisper：识别超时（${settings.timeoutMs} ms）`));
-        }, settings.timeoutMs);
-        const onAbort = () => {
+        // 阶梯是异步判定的：先挂「启动失败」兜底，再在成功回调里挂正常监听
+        launched.then(({ child: live, how, tried }) => {
+          child = live;
+          if (how !== "direct") console.error(`Whisper: 用 ${how} 档启动成功（尝试序列 ${tried.join(" → ")}）`);
+          onLaunched(live);
+        }, (error) => {
           clearTimeout(timer);
-          child.kill("SIGKILL");
-          reject(signal?.reason instanceof Error ? signal.reason : new Error("识别已取消"));
+          const tried = Array.isArray(error?.tried) ? `；尝试序列 ${error.tried.join(" → ")}` : "";
+          reject(new Error(`Whisper：无法启动 ${settings.binary}（${error?.message ?? error}${tried}）`));
+        });
+        const onLaunched = (child) => {
+          let out = "";
+          let err = "";
+          timer = setTimeout(() => {
+            child.kill("SIGKILL");
+            reject(new Error(`Whisper：识别超时（${settings.timeoutMs} ms）`));
+          }, settings.timeoutMs);
+          const onAbort = () => {
+            clearTimeout(timer);
+            child.kill("SIGKILL");
+            reject(signal?.reason instanceof Error ? signal.reason : new Error("识别已取消"));
+          };
+          signal?.addEventListener("abort", onAbort, { once: true });
+          child.stdout.on("data", (data) => (out += data));
+          child.stderr.on("data", (data) => (err += data));
+          child.on("close", (code) => {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+            if (signal?.aborted) return;
+            if (code !== 0) reject(new Error(`Whisper：退出码 ${code}；${err.trim().slice(0, 300)}`));
+            else resolve(out.trim());
+          });
         };
-        signal?.addEventListener("abort", onAbort, { once: true });
-        child.stdout.on("data", (data) => (out += data));
-        child.stderr.on("data", (data) => (err += data));
-        child.on("error", (error) => {
-          clearTimeout(timer);
-          reject(new Error(`Whisper：无法启动 ${settings.binary}（${error.message}）`));
-        });
-        child.on("close", (code) => {
-          clearTimeout(timer);
-          signal?.removeEventListener("abort", onAbort);
-          if (signal?.aborted) return;
-          if (code !== 0) reject(new Error(`Whisper：退出码 ${code}；${err.trim().slice(0, 300)}`));
-          else resolve(out.trim());
-        });
+        let timer = null;
       });
       return {
         text,

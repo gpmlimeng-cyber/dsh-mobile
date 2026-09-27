@@ -61,9 +61,29 @@ function wavSeconds(bytes) {
   return 0;
 }
 
-/** Resolve the API key from config, environment, or key files. Throws a clear, actionable error. */
-function resolveApiKey(settings) {
+/**
+ * Resolve the API key. 顺序（2026-09-27 修正）：
+ *   ① config.apiKey（显式配置）
+ *   ② **引擎凭据服务 `ctx.credentials.resolve(<ref>)`** —— DSH 的密钥真源！
+ *      在 DSH 里「设置 → 添加自定义供应商」写下的 key 落在 `$DSH_HOME/.credentials.yaml`，
+ *      由凭据服务按 ref 解析；**它不会导出到进程环境变量**。此前只查 process.env，于是必然报
+ *      「no API key」，而 key 明明已经配好了（真机实锤）。
+ *   ③ process.env（壳侧注入的情形，如 DASHSCOPE_API_KEY）
+ *   ④ apiKeyFile（把文件内容整份当 key）
+ * 全部落空才抛错，错误信息给出三条可执行路径。
+ */
+async function resolveApiKey(ctx, settings) {
   if (typeof settings.apiKey === "string" && settings.apiKey.trim()) return settings.apiKey.trim();
+  const credentials = typeof ctx?.get === "function" ? ctx.get("credentials") : undefined;
+  if (credentials !== undefined && settings.apiKeyEnv) {
+    try {
+      const resolved = await credentials.resolve(settings.apiKeyEnv);
+      const value = resolved?.value;
+      if (typeof value === "string" && value.trim()) return value.trim();
+    } catch {
+      /* 凭据服务不可用/读取失败：继续走后面的回落，不要因此让识别整条不可用 */
+    }
+  }
   const fromEnv = settings.apiKeyEnv ? process.env[settings.apiKeyEnv] : undefined;
   if (typeof fromEnv === "string" && fromEnv.trim()) return fromEnv.trim();
   const files = (Array.isArray(settings.apiKeyFile) ? settings.apiKeyFile : [settings.apiKeyFile]).filter(
@@ -78,7 +98,8 @@ function resolveApiKey(settings) {
     }
   }
   throw new Error(
-    `MiMo ASR: no API key. Set ${settings.apiKeyEnv || "MIMO_API_KEY"}, or write the key to ${files.join(", ") || "<apiKeyFile>"}.`,
+    `MiMo ASR: no API key. 在 DSH「设置 → 供应商」里为该路由填 key（落到 $DSH_HOME/.credentials.yaml），` +
+      `或设环境变量 ${settings.apiKeyEnv || "MIMO_API_KEY"}，或写入文件 ${files.join(", ") || "<apiKeyFile>"}。`,
   );
 }
 
@@ -110,7 +131,7 @@ export function apply(ctx, config = {}) {
         `MiMo ASR: recording is ${audio.byteLength} bytes, above the ${settings.maxAudioBytes}-byte limit`,
       );
     }
-    const apiKey = resolveApiKey(settings);
+    const apiKey = await resolveApiKey(ctx, settings);
     const hint = info.languages.includes(language) ? language : "auto";
     const startedAt = Date.now();
     const budget =

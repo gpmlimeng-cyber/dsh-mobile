@@ -26,10 +26,26 @@ function tinyWav() {
   return buffer;
 }
 
-function registerOnce() {
+function registerOnce(extraCtx = {}) {
   const registered = [];
-  const ctx = { speechToText: { register: (provider) => (registered.push(provider), async () => {}) }, effect: (fn) => fn() };
+  const ctx = {
+    speechToText: { register: (provider) => (registered.push(provider), async () => {}) },
+    effect: (fn) => fn(),
+    ...extraCtx,
+  };
   apply(ctx, { apiKey: "test-key" });
+  return registered[0];
+}
+
+/** 只装配凭据服务、不显式给 apiKey 的实例（复现真机：key 在凭据服务里、不在进程 env）。 */
+function registerWithCredentials(credentials) {
+  const registered = [];
+  const ctx = {
+    speechToText: { register: (provider) => (registered.push(provider), async () => {}) },
+    effect: (fn) => fn(),
+    get: (name) => (name === "credentials" ? credentials : undefined),
+  };
+  apply(ctx, { apiKey: "", apiKeyEnv: "XIAOMI_TOKEN_PLAN_CN_API_KEY" });
   return registered[0];
 }
 
@@ -97,6 +113,45 @@ test("无密钥：报可执行的错误（指引 env 或 key 文件）", async (
     assert.match(String(error.message), /MIMO_API_KEY/);
   } finally {
     if (envBackup !== undefined) process.env.MIMO_API_KEY = envBackup;
+  }
+});
+
+test("凭据服务优先：key 在 ctx.credentials 里（进程 env 没有）也必须能识别", async () => {
+  // 真机实锤（2026-09-27）：DSH 的供应商 key 落在 $DSH_HOME/.credentials.yaml，由凭据服务按 ref
+  // 解析，**不导出到进程环境变量** ⇒ 只查 process.env 的实现在真机上恒报 no API key。
+  const seen = [];
+  const original = globalThis.fetch;
+  const envBackup = process.env.XIAOMI_TOKEN_PLAN_CN_API_KEY;
+  delete process.env.XIAOMI_TOKEN_PLAN_CN_API_KEY;
+  globalThis.fetch = async (url, init) => {
+    seen.push(init.headers);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "凭据服务取到的 key 生效" } }] }), { status: 200 });
+  };
+  try {
+    const provider = registerWithCredentials({
+      resolve: async (ref) => (ref === "XIAOMI_TOKEN_PLAN_CN_API_KEY" ? { value: "tp-from-store", source: "file" } : undefined),
+    });
+    const result = await provider.transcribe({ audio: tinyWav(), language: "zh" }, new AbortController().signal);
+    assert.equal(result.text, "凭据服务取到的 key 生效");
+    assert.equal(seen[0]["api-key"], "tp-from-store");
+  } finally {
+    globalThis.fetch = original;
+    if (envBackup !== undefined) process.env.XIAOMI_TOKEN_PLAN_CN_API_KEY = envBackup;
+  }
+});
+
+test("凭据服务缺席/解析失败：回落到 env 后再报可执行错误（不因服务异常整条不可用）", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
+  try {
+    // resolve 抛错 → 必须继续回落（这里 env 也没有 → 报 no API key，而不是把凭据异常抛给用户）
+    const provider = registerWithCredentials({ resolve: async () => { throw new Error("store unreadable"); } });
+    await assert.rejects(
+      () => provider.transcribe({ audio: tinyWav(), language: "zh" }, new AbortController().signal),
+      (error) => /no API key/.test(String(error.message)),
+    );
+  } finally {
+    globalThis.fetch = original;
   }
 });
 

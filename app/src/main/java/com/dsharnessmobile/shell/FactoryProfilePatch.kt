@@ -43,8 +43,12 @@ internal object FactoryProfilePatch {
   /** 纠正结果：[text] 为纠正后全文，[changes] 为人类可读的改动说明（写日志/诊断）。 */
   internal class Result(val text: String, val changes: List<String>)
 
-  private val ID_LINE = Regex("""^\s*(?:-\s+)?id:\s*(\S+)""", RegexOption.MULTILINE)
-  private val DISABLED_LINE = Regex("""^(\s*)disabled:\s*(true|false)\s*(#.*)?$""", RegexOption.MULTILINE)
+  // 只用**水平空白**（[ \t]）而不是 \s：\s 在 Kotlin/Java 正则里匹配换行，而本文件的两个
+  // 正则都被拿去 `replaceRange(m.range, ...)` 做行内改写——一旦匹配跨过行尾，替换就会把那个
+  // 换行吞掉，两行被拼成一行（真机实锤：`disabled: true- id: llm-pi-ai`，整个 profile 补丁
+  // 解析失败、引擎起不来。触发条件 = 工厂与 live 的 disabled 值不一致而走改写分支）。
+  private val ID_LINE = Regex("""^[ \t]*(?:-[ \t]+)?id:[ \t]*(\S+)""", RegexOption.MULTILINE)
+  private val DISABLED_LINE = Regex("""^([ \t]*)disabled:[ \t]*(true|false)[ \t]*(#.*)?$""", RegexOption.MULTILINE)
   private val TOP_ITEM = Regex("^- ")
 
   /**
@@ -198,7 +202,7 @@ internal object FactoryProfilePatch {
     val id = ID_LINE.find(block) ?: return block
     val lineEnd = block.indexOf('\n', id.range.first)
     if (lineEnd < 0) return block + "  disabled: " + want + "\n"
-    val indent = Regex("""^(\s*)""").find(id.value)?.groupValues?.get(1).orEmpty() + "  "
+    val indent = Regex("""^[ \t]*""").find(id.value)?.value.orEmpty() + "  "
     return block.substring(0, lineEnd + 1) + indent + "disabled: " + want + "\n" + block.substring(lineEnd + 1)
   }
 

@@ -191,7 +191,18 @@ node scripts/build-apk.mjs --abi arm64 --suffix <sfx>    # 门禁 → 注入 →
    壳侧还需 `AndroidManifest.xml` 的 `RECORD_AUDIO` + MainActivity 的 `onPermissionRequest`（两者缺一，页面都会说
    「麦克风权限未开启」）。踩坑与判据见坑 193-195。
 
+ 3.6 **sherpa-onnx / SenseVoice 资产（同上注入面，2026-09-27）**：第三路本机后端用 **sherpa-onnx 官方
+    Android aarch64 Termux 预编译包**（本机实测可跑，见坑 199），同一份 `tools/snapshot-assets.json` 里追加成员：
+    `usr/bin/{sherpa-onnx-offline,sherpa-onnx-vad-with-offline-asr}`、`usr/lib/sherpa-onnx/{libonnxruntime,libc++_shared}.so`、
+    `home/.dsh/speech-to-text/sherpa/{tokens.txt,silero_vad.onnx}`（**只带专属库目录**：CLI 的 NEEDED 只有
+    onnxruntime 与 libc++，`libsherpa-onnx-c-api/cxx-api.so` 是给 node/JNI 绑定用的，不随包）。
+    239 MB 的 `model.int8.onnx` **不进快照**（也不进 APK），由插件的 `preparation.prepare()` 按需下载并做
+    `content-length` + sha256 双校验（坑 201）；silero 是可选资产，缺失自动回落直接档（坑 202）。
+    注意 `add-snapshot-assets.py` 的**输出是未压缩 tar**（用法即 `<in.tar.xz> <out.tar>`）：要喂给
+    `build-apk.mjs --snapshot` 必须先自己压回 xz（本次 `xz -T6 -1 -c`，343 MB）；该中间档的 preset 与最终产物无关
+    （inject-all 会按 `DSH_INJECT_PRESET` 重压一次）。
+
 4. **装机（共存包）**：`adb push` APK 到 `/data/local/tmp` 后走 MIUI 安装器
    `am start -n com.miui.packageinstaller/com.miui.packageInstaller.InstallStart -a android.intent.action.VIEW -d file:///data/local/tmp/<apk> -t application/vnd.android.package-archive`
-   （`adb install` 在本机被「USB 安装」闸门拒，坑 174）。装完核对：`ENGINE_PORT` 该包独占（主包 3080 / dev 包 3081）、
+   （`adb install` 在本机被「USB 安装」闸门拒，坑 174；APK 必须先落到 `/sdcard` 或 `/data/local/tmp`——工作区在应用私有目录里，uid 2000 读不到）。装完核对：`ENGINE_PORT` 该包独占（主包 3080 / dev 包 3081）、
    引擎版本 `0.1.7-rc.2`、`boot-diag.log` 出 `page-ready`。

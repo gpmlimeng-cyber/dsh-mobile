@@ -746,4 +746,13 @@
     修法：三处正则一律换成**水平空白** `[ \t]`（`FactoryProfilePatch.kt:46-52` 与 `setDisabledValue` 的缩进提取），从结构上杜绝匹配跨行；回归用例 `FactoryProfilePatchTest.mergeNeverGluesTwoBlocksIntoOneLine`（判据：结果里不得出现 `disabled: <bool>` 同行紧跟非空白内容 + 块数不减）。**判别力已反证**：把正则退回 `\s` 该用例必红（实测 failures=1），修复后 14 项全绿。
     运维口径：升级后若报 overlay 解析错误，先看该文件有没有 `(true|false)- id:` 形态；有就按 `disabled: <bool>` 后补一个换行修回（本轮就这么救回了设备），再装带修复的包。
     判据：`grep -cP 'disabled:[ \t]*(true|false)[ \t]*\S'` 在 profile 补丁里为 0；引擎 boot 通过。
+197. **app 私有目录里的 ELF，引擎侧 spawn 也可能 EACCES——插件要自带「直连→linker64→sh」启动阶梯（2026-09-27 真机实锤）**：语音 provider 在引擎里 `spawn(<pkg>/files/usr/bin/whisper-cli)` 报 `spawn … EACCES`。真因：Android 15+（部分 ROM 更早）**禁止 app 私有目录中的 ELF 直接 execve**；壳侧起引擎自己就有这套兜底（`EngineManager.startWithArgs`：直连失败 → `/system/bin/linker64 <bin> <args…>`），而**引擎的子进程 spawn 是否被 termux-exec 的 execve 钩子覆盖并不保证**（取决于宿主进程的 env/装载路径，实测同一份二进制在 `run-as` 起的 harness 里直连可用、在引擎里被拒）。
+    修法（插件侧，不依赖父环境）：`launchLadder(binary, args)` 给出三档并按序降级 —— ① 直连；② `/system/bin/linker64 <binary> <args…>`；③ `/system/bin/sh -c 'exec "$0" "$@"' <binary> <args…>`。**只在「启动失败」（`error` 事件里的 EACCES/EPERM/ENOEXEC）时降级**，进程起来之后的失败（退出码非 0/超时）不换档，否则会把「命令本身跑失败」误判成启动问题。另：二进制存在性要**前置检查**，否则缺文件会走到 sh 档并退化成「退出码 127」，用户看不出真因。
+    判据：设备侧强制 `linker64` 档实测转写成功（11 s 音频 2.36 s、文本正确）；单测锁 `launchLadder` 的档位顺序与 argv 形态（`sh` 档必须是 `exec "$0" "$@"`）。
+198. **DSH 的供应商 key 在凭据服务里，不在进程环境变量里——插件必须走 `ctx.credentials.resolve(ref)`（2026-09-27 真机实锤）**：云端 ASR 插件只查 `config.apiKey`/`process.env.<REF>`/key 文件，真机上恒报 `no API key`，而用户在「设置 → 供应商」里早就填好了。
+    真因：key 落在 `$DSH_HOME/.credentials.yaml`，由引擎的**凭据服务**按 ref 解析（`ctx.credentials.resolve("<REF>") -> {value, source} | undefined`，`dsh-credentials-local` 提供；pi-ai 的 `envApiKeyAuth` 也是经它解析），**不会 materialize 成环境变量**（引擎源码注释明说「a store the Harness owns and never materializes into the environment」）。
+    修法：解析顺序 config → `ctx.get("credentials")?.resolve(apiKeyEnv)` → `process.env` → key 文件；凭据服务缺席**或抛异常**时继续回落（不能因服务异常让整条识别不可用）；错误文案给三条可执行路径。
+    判据：单测「key 只在 ctx.credentials 里（进程 env 没有）也必须识别成功」+ 真实端点用同一把 key 打 HTTP 200（`token-plan-cn`）；反证：只看 `process.env` 的实现必红。
+    推论：**任何要用户填 key 的插件都别再读 `process.env` 当唯一来源**——`DASHSCOPE_API_KEY` 这种是壳侧特例（由 `shellEnv()` 从私有文件注入），不是通用形态。
+
 

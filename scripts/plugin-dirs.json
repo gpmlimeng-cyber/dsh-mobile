@@ -16,6 +16,7 @@
     "vendor/dsh-undo-savepoint",
     "vendor/dshmarketplace-plugin",
     "plugins/dsh-whisper-local",
-    "plugins/dsh-mimo-asr"
+    "plugins/dsh-mimo-asr",
+    "plugins/dsh-sherpa-local"
   ]
 }

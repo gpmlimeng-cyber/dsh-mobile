@@ -103,3 +103,17 @@
 |---|---|---|---|
 | @napi-rs/canvas | 1.0.8 | MIT | [Brooooooklyn/canvas](https://github.com/Brooooooklyn/canvas) |
 | @napi-rs/canvas-android-arm64 | 1.0.8 | MIT | [Brooooooklyn/canvas](https://github.com/Brooooooklyn/canvas)（napi android-arm64 预编译 binding） |
+
+## 手动注入的第三方二进制与模型（非 dpkg 包，上表不含）
+
+以下组件由构建链以文件形式注入快照（`tools/snapshot-assets.json` -> `usr/bin`、`usr/lib`、`home/.dsh/speech-to-text`），
+不来自 Termux dpkg 仓库，故不在上方 dpkg 清单里；此处按许可证要求单独登记。
+
+| 组件 | 版本 | 许可证 | 上游 | 注入路径 |
+|---|---|---|---|---|
+| whisper.cpp（whisper-cli + ggml/whisper 共享库） | 1.9.4（本机原生编译） | MIT | [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp) | `usr/bin/whisper-cli`、`usr/lib/dsh-whisper/` |
+| whisper.cpp 模型 ggml-tiny.bin | tiny | MIT（模型随 whisper.cpp 发布） | [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp) | `home/.dsh/speech-to-text/whisper/ggml-tiny.bin` |
+| sherpa-onnx（sherpa-onnx-offline / sherpa-onnx-vad-with-offline-asr） | 1.13.8（官方 Android aarch64 Termux 预编译） | Apache-2.0 | [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | `usr/bin/sherpa-onnx-offline`、`usr/bin/sherpa-onnx-vad-with-offline-asr` |
+| ONNX Runtime | 1.28.2（随 sherpa-onnx 预编译包） | MIT | [microsoft/onnxruntime](https://github.com/microsoft/onnxruntime) | `usr/lib/sherpa-onnx/libonnxruntime.so` |
+| SenseVoice Small int8（model.int8.onnx + tokens.txt） | 2024-07-17 | Apache-2.0（FunASR/SenseVoice） | [FunAudioLLM/SenseVoice](https://github.com/FunAudioLLM/SenseVoice)、[HF 模型页](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17) | 按需下载到 `home/.dsh/speech-to-text/sherpa/`（不随 APK 分发） |
+| Silero VAD（silero_vad.onnx, v5） | v5 | MIT | [snakers4/silero-vad](https://github.com/snakers4/silero-vad) | `home/.dsh/speech-to-text/sherpa/silero_vad.onnx` |

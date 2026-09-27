@@ -117,7 +117,7 @@ sequenceDiagram
 | P02 | 管理插件（dsh-android-manage） | 把模型意图落成壳侧无障碍或特权 shell 的屏幕工具面 | 模型每轮 tool call；插件 apply 时注册 14 个工具 | 稳态控制 | 授权桥与控制队列（androidPrivilege）,壳侧无障碍与特权执行面,屏幕范围偏好 | 引擎 cordis 装配（android-bridge 先于 android-manage）；每次模型 tool call | plugins/dsh-android-manage/src/index.ts,plugins/dsh-android-manage/src/protocol-v2.ts,plugins/dsh-android-manage/src/vd-shot.ts | 高 |
 | P03 | 浏览器与虚拟屏插件 | browser_* 与 vd* 工具落壳侧控制 op 并如实回执 | 模型调用 browser_* / android_vdisplay_* 工具 | 稳态控制 | K08,K07,桥控制队列 | 引擎启动时按装配集注册 | plugins/dsh-android-browser/src/tools.ts,plugins/dsh-android-browser/src/index.ts,plugins/dsh-android-vdisplay/src/index.ts,plugins/dsh-android-vdisplay/src/status.ts | 高 |
 | P04 | 文件打开、Linux 环境与模型能力插件 | 外部来件草稿、工具链与缓存清理、模型能力写回 | 壳侧 FileIncoming 投递 / 设置页 HTTP / cordis 装配 | 稳态控制 | 桥与鉴权、客户端注入层、shell-termux 工具链表、快照装配链 | 壳侧 FileIncoming.processIncomingIntent、设置页与开发者选项、cordis 装配 | plugins/dsh-android-file-open/src/index.ts,plugins/dsh-android-linux-env/src/runtime-cache.ts,plugins/dsh-model-capability/src/index.ts | 高 |
-| P05 | 语音输入 provider 面（deepcode 二开） | 把 DSH 的 `speechToText` 注册表接上两个 android 可用后端：本机 whisper.cpp（离线）与小米 MiMo-V2.5-ASR（云端），并在壳侧打通麦克风授权双门 | 用户点麦克风说话；设置页选 provider / 准备模型 | 交互面 | P04 装配链、K01 WebView 宿主（onPermissionRequest）、B01 快照资产注入 | 引擎 cordis 装配（profile-web.cordis.patch.yml 的 insert 行）+ 壳侧 WebChromeClient.onPermissionRequest | plugins/dsh-whisper-local/index.js,plugins/dsh-whisper-local/test/whisper-local.test.mjs,plugins/dsh-mimo-asr/index.js,plugins/dsh-mimo-asr/test/mimo-asr.test.mjs,scripts/snapshot-config/profile-bundles.json,scripts/snapshot-config/profile-compatibility.json | 中 |
+| P05 | 语音输入 provider 面（deepcode 二开） | 把 DSH 的 `speechToText` 注册表接上三个 android 可用后端：本机 whisper.cpp（离线）、本机 sherpa-onnx SenseVoice（离线，中文优先）与小米 MiMo-V2.5-ASR（云端），并在壳侧打通麦克风授权双门 | 用户点麦克风说话；设置页选 provider / 准备模型 | 交互面 | P04 装配链、K01 WebView 宿主（onPermissionRequest）、B01 快照资产注入 | 引擎 cordis 装配（profile-web.cordis.patch.yml 的 insert 行）+ 壳侧 WebChromeClient.onPermissionRequest | plugins/dsh-whisper-local/index.js,plugins/dsh-whisper-local/test/whisper-local.test.mjs,plugins/dsh-sherpa-local/index.js,plugins/dsh-sherpa-local/test/sherpa-local.test.mjs,plugins/dsh-mimo-asr/index.js,plugins/dsh-mimo-asr/test/mimo-asr.test.mjs,scripts/snapshot-config/profile-bundles.json,scripts/snapshot-config/profile-compatibility.json | 中 |
 | S01 | 引擎侧注入层（三个子仓） | 页面内发布标记与桥入口、钳面板几何、装配老内核垫片 | 客户端插件 apply() 装载；每个 index 响应经 tapIndex 注入 | 交互面 | K04（壳侧 androidBridge/dshBackBridge 桥面） | 引擎插件系统按 profile-web.cordis.patch.yml 的 insert 行拉起 | dsh-client-ui-responsive/src/client/index.ts,dsh-host-web-compat/lib/index.js,dsh-shell-termux/src/index.ts | 高 |
 | B01 | 构建链与快照注入 | 快照构建 插件注入 门禁收口 到 APK 出包 | 人手动 pwsh -File scripts\build-apk-013.ps1 或发布链/CI 调用 | 构建与发布 | 门禁块,壳侧快照解压,插件源码与 vendor 固化面 | 开发者手动,发布链 build-release.ps1,CI 与云端 build-apk.mjs | scripts/build-apk-013.ps1,scripts/build-snapshot-013.mjs,scripts/inject-all.py,scripts/patches/apply-patches.mjs | 高 |
 | B02 | 静态门禁链与 CI | 33 个静态门禁脚本与三层接线的唯一声明处 | PR/CI、两条打包链、发布链 | 测试与门禁 | B01,B03 | 提交 PR、推 main、构建/发版 | scripts/check-release-gates.mjs,scripts/check-gate-skips.mjs,.github/workflows/pr-gate.yml,scripts/build-apk-013.ps1 | 高 |
@@ -1945,18 +1945,23 @@ flowchart TD
 
 #### P05 语音输入 provider 面（deepcode 二开）
 
-> 本仓新增能力（上游无对应面）：把 DSH 的 `speechToText` 注册表接上两个 Android 可用后端，并在壳侧打通麦克风授权。
-> 上游唯一本地 provider（sensevoice）依赖 `sherpa-onnx-node` 的 android-arm64 绑定，而该绑定**从未发布**（见坑 193）。
+> 本仓新增能力（上游无对应面）：把 DSH 的 `speechToText` 注册表接上三个 Android 可用后端，并在壳侧打通麦克风授权。
+> 上游唯一本地 provider（sensevoice）依赖 `sherpa-onnx-node` 的 android-arm64 绑定，而该绑定**从未发布**（见坑 193）；
+> 但 sherpa-onnx **官方 Android aarch64 Termux 预编译 CLI** 在本机实测可跑，故第三条路线是「直接 spawn 官方 CLI 跑 SenseVoice」（见坑 199）。
 
-- **一句话**：整段录音进来（canonical WAV Buffer）→ 选中的 provider 转写 → 返回 `{text, audioSeconds, inferenceSeconds}`；本机 whisper.cpp 走 CLI 子进程，云端 MiMo 走 OpenAI 兼容 chat/completions。
+- **一句话**：整段录音进来（canonical WAV Buffer）→ 选中的 provider 转写 → 返回 `{text, audioSeconds, inferenceSeconds}`；两个本机 provider 各 spawn 自己的 CLI 子进程（whisper-cli / sherpa-onnx-offline），云端 MiMo 走 OpenAI 兼容 chat/completions。
 - **入口/触发**：页面麦克风（`getUserMedia`）→ 壳侧 `WebChromeClient.onPermissionRequest`（先申请 `RECORD_AUDIO` 再 `grant(RESOURCE_AUDIO_CAPTURE)`）→ Remote `speech.transcribe` → `speechToText.resolve/transcribe` → provider；设置页可切 provider / 触发模型准备（`preparation.prepare` 下载模型）。
-- **运行顺序**：引擎装配期 `apply`（`plugins/dsh-whisper-local/index.js:200`、`plugins/dsh-mimo-asr/index.js:96`）各注册一个 provider（`inject=['speechToText']`）；本机 provider 的 `ModelPreparation`（`plugins/dsh-whisper-local/index.js:87`）在装配时只看模型是否在（不下载），首次准备才流式下载；每次识别 spawn 一次 `whisper-cli`（`:230`）或 POST 一次云端（`plugins/dsh-mimo-asr/index.js:106`）。
+- **运行顺序**：引擎装配期 `apply`（`plugins/dsh-whisper-local/index.js:284`、`plugins/dsh-sherpa-local/index.js:497`、`plugins/dsh-mimo-asr/index.js:96`）各注册 provider（`inject=['speechToText']`；whisper 一档模型一个 provider、sherpa 一个 provider）；本机 provider 的准备状态机（whisper `plugins/dsh-whisper-local/index.js:171`、sherpa `plugins/dsh-sherpa-local/index.js:368`）在装配时只看资产是否在（不下载/不校验），首次 `prepare()` 才流式下载并做 sha256 校验；每次识别 spawn 一次 CLI（whisper `:319`、sherpa `:505`）或 POST 一次云端（`plugins/dsh-mimo-asr/index.js:106`）。
+- **sherpa 专属链路**：`normalizeWav`（`plugins/dsh-sherpa-local/index.js:135`，重写 RIFF/data 尺寸，sherpa 的 wave-reader 按声明长度整块读，尺寸陈旧即退出 255）→ `buildArgs`（`:250`，`--tokens` / `--sense-voice-model` / `--sense-voice-language` / `--sense-voice-use-itn` / `--num-threads`，VAD 档再插 `--silero-vad-model` 并换 `sherpa-onnx-vad-with-offline-asr`）→ `parseSenseVoiceOutput`（`:279`，JSON 档与 VAD 段档两种真实形态）。
 - **关键坐标**：`plugins/dsh-whisper-local/index.js:200`（注册与路径推导：binary/libraryPath 由 `process.execPath` 前缀推导，不写死包名）、`:230`（spawn `whisper-cli -m <model> -f <wav> -l <lang> -t N --no-timestamps --no-prints`，`LD_LIBRARY_PATH` 前置专属库目录）、`:87`（模型下载状态机：unprepared→preparing→ready/failed/cancelled）；`plugins/dsh-mimo-asr/index.js:96`（云端注册）、`:106`（请求构造）、`:89`（语言标签剥离）；壳侧 `app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt` 的 `onPermissionRequest`/`onRequestPermissionsResult` 与 `AndroidManifest.xml` 的 `RECORD_AUDIO`。
 - **不变量**：① 模型未就绪时 `transcribe` 必须明确报错而不是 spawn 注定失败的进程（单测 `plugins/dsh-whisper-local/test/whisper-local.test.mjs:47`）；② 云端端点固定为 `https://token-plan-cn.xiaomimimo.com/v1`（配错到 `api.xiaomimimo.com` 会 401 invalid_key，单测 `plugins/dsh-mimo-asr/test/mimo-asr.test.mjs:47`）；③ 返回文本必须是纯文本（剥掉 `<chinese>` 之类标签，同测试 `:47`）；④ 临时 WAV 落 `$DSH_HOME/tmp`（本机 `os.tmpdir()` 指向烧死的 com.termux 前缀，见坑 194）。
 - **症状 → 排查**：
   - 页面提示「麦克风权限未开启，请在浏览器和系统设置中允许访问」→ 壳侧双门缺一：`grep -n "RECORD_AUDIO" app/src/main/AndroidManifest.xml`、`grep -n "onPermissionRequest" app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt`。
   - provider 插件不生效 / 设置页没有它 → profile 是否登记 voice-input bundle（`grep -n voice-input scripts/snapshot-config/profile-bundles.json`）且 `engine.log` 无 `pending (waiting for service: speechToText)`。
   - 本机识别报 `CANNOT LINK EXECUTABLE ... cannot locate symbol __hash_memory` → 共享库目录缺同源 `libc++_shared.so`（`ls files/usr/lib/dsh-whisper/`，见坑 194）。
+  - SenseVoice 报 `Failed to read N bytes` / 退出码 255 → 入口 WAV 的 RIFF 声明长度与实际不符（截断或陈旧尺寸）；插件的 `normalizeWav` 必须已生效（见坑 200）。
+  - SenseVoice 报「模型尚未就绪」 → 239 MB 权重未下载（`prepare()` 或设置页准备）；权重与 `tokens.txt` 必须同源，插件按 sha256 校验（见坑 201）。
+  - 想用 SenseVoice 却在设置页看不到 → 主 `sherpa-onnx` 二进制在 1.13.8 已不带 `--sense-voice-*`，必须是 `sherpa-onnx-offline`（见坑 199）。
   - 云端报 401 invalid_key → 端点或 key 用错路由（见坑 195）。
 
 ### 注入层子仓
@@ -2641,6 +2646,8 @@ plugins/dsh-whisper-local/index.js
 plugins/dsh-whisper-local/test/whisper-local.test.mjs
 plugins/dsh-mimo-asr/index.js
 plugins/dsh-mimo-asr/test/mimo-asr.test.mjs
+plugins/dsh-sherpa-local/index.js
+plugins/dsh-sherpa-local/test/sherpa-local.test.mjs
 -->
 
 ## 8. 已知漂移（文档与源码不一致，待当场修文档）

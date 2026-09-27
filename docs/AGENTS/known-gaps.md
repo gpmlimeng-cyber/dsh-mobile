@@ -272,3 +272,15 @@ real-only 反证；判据全在设备事实上，证据不足判 `INCONCLUSIVE` 
   里带着 `voice-input-bundle` / `experimental-agent-team-profile` / `experimental-auto-review` 三项工厂从未
   声明的条目，升级后仍在 ⇒ 语音输入页面在**升级设备**上依旧出现，而全新安装不会（见坑 191/192）。要彻底
   收敛，需要壳侧在合并时按工厂参考**剪除**未知 bundle（属独立改动，涉及快照事务语义，未做）。
+
+### 语音：流式听写（边说边出字）未实现（2026-09-27 登记）
+
+- **现状**：三个 provider 都是**整段识别**——`speech.transcribe` 的契约本身就是一次性的（一段 canonical WAV 进、一段文本出），所以 UI 上是「说完再出字」。
+- **要做出流式**需要三件东西，缺一不可：① 引擎侧一条**流式**路由（现有 `speech.transcribe` 不是）；② 本机流式模型（sherpa-onnx 官方 CLI 已随包提供 `sherpa-onnx-online-websocket-server` 与 `sherpa-onnx-vad-with-online-asr`，模型可用 `sherpa-onnx-streaming-zipformer-*` / `streaming-paraformer-*`，**都要另下权重**）；③ 自定义**客户端** voice-input 插件（上游 `ui-voice-input` 只按一次性契约工作）。
+- **不是缺陷**：这是产品形态选择，SenseVoice 的非流式识别在短句上延迟已很低（2.4 s 墙钟、其中 1.3 s 是模型装载）；若要做常驻进程还可把这 1.3 s 摊掉。
+
+### 语音：SenseVoice 权重不随包 + VAD 默认关（2026-09-27 登记）
+
+- `model.int8.onnx`（239 MB）按需下载，首用需一次联网下载（下载完整性已用 `content-length` + sha256 双锁保证）。
+- VAD 档（`sherpa-onnx-vad-with-offline-asr` + silero）随包但默认 `vad: false`：短句（语音输入的主场景）直接档更快；长录音/多句场景可在 profile 行打开 `vad: true`。
+- `defaultProvider` 仍为 `whisper-tiny`（新装 APK 零下载即可用）；质量优先需在设置页切到 `sherpa-sensevoice`（首次触发下载）。

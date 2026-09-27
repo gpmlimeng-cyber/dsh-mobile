@@ -756,3 +756,25 @@
     推论：**任何要用户填 key 的插件都别再读 `process.env` 当唯一来源**——`DASHSCOPE_API_KEY` 这种是壳侧特例（由 `shellEnv()` 从私有文件注入），不是通用形态。
 
 
+
+199. **上游 sensevoice provider 走不通，但 sherpa-onnx 官方 Android aarch64 Termux 预编译包能跑——它是 Android 上第三条可用本地路线（2026-09-27 真机实测闭环）**：上游 `dsh-experimental-speech-to-text-sensevoice` 依赖 `sherpa-onnx-node`（npm 只有 darwin/linux/win 绑定），Android 上必然「准备失败」。**但同一项目的官方 release 里带 Android aarch64 Termux 预编译 CLI**（`sherpa-onnx-v1.13.8-android-aarch64-termux-shared.tar.bz2`，sha256 `ad7bac42adc6295293fe6d36475936afb227cdc757cf293c02a706f6aca4e0a2`），本机实测 `sherpa-onnx version : 1.13.8` / onnxruntime 1.28.2、退出码 0 —— 于是「不需要 android-arm64 的 node addon」也能用上 SenseVoice（`plugins/dsh-sherpa-local` 就是直接 spawn 它）。
+    ① **SenseVoice 不在主二进制里**：1.13.8 的 `sherpa-onnx` 参数表里**没有** `--sense-voice-model`（`grep -c sense-voice` = 0），`--sense-voice-model` / `--sense-voice-language` / `--sense-voice-use-itn` 只在 `sherpa-onnx-offline`；要 VAD 切句则必须用 `sherpa-onnx-vad-with-offline-asr`（它同时支持 `--silero-vad-model` 与 `--sense-voice-*`）。**照老文档写 `sherpa-onnx --sense-voice-model=…` 会得到一句「未知参数」**。
+    ② 只带**专属库目录**（`libonnxruntime.so` + 同源 `libc++_shared.so`）即可运行：`readelf -d sherpa-onnx-offline` 的 NEEDED 只有 `libandroid/liblog/libc/libonnxruntime/libm/libdl/libc++_shared`，`libsherpa-onnx-c-api.so`/`cxx-api.so` 是给 JNI/node 绑定用的，CLI 静态内含，**不必随包**（省 5.6 MB）。
+    ③ 质量与速度（本机 10 核，`--num-threads=8`，官方测试音频）：zh `开饭时间早上9点至下午5点。`、yue `呢几个字都表达唔到我想讲嘅意思。`、en 全对；推理 RTF 0.025–0.045（5.6 s 音频 0.14–0.25 s，墙钟 2.4 s 里主要是 ~1.3 s 的模型装载）。ITN 打开后自带标点与阿拉伯数字，可直接当聊天输入——这是 whisper-tiny 在中文上的明显短板（同机 whisper-small-q5 跑 11 s 音频要 10.3 s）。
+    ④ 两个真实输出形态（解析器必须都吃下）：离线档 stdout 一行 JSON `{"lang":"<|zh|>","emotion":…,"text":"…","timestamps":[…]}`；VAD 档每句一行 `0.742 -- 5.568: 开饭时间早上9点至下午5点。`（含空句行 `: `）。
+
+200. **sherpa 的 wave-reader 按 RIFF 声明长度整块读：WAV 尺寸字段陈旧/文件截断 ⇒ 直接 `Failed to read N bytes` + 退出码 255（whisper 却照样出字）（2026-09-27 实测）**：同一份 `jfk.wav`（文件实长 288,576 B，但 `data` 块声明 352,000 B，`RIFF` 声明 352,078 B）在 whisper 下正常出字，在 sherpa 下 `wave-reader.cc:ReadWaveImpl:236 Failed to read 352000 bytes` → `Failed to read '<wav>'` → exit 255，**整条识别失败**。
+    真因：whisper.cpp 的读法对尾部短读宽容，sherpa 按声明长度要满读。录音链路上游（浏览器 MediaRecorder / 快照桥）只要有一次尺寸字段陈旧或连接中断，用户看到的就是「识别失败」而看不出是容器问题。
+    修法：插件在落盘前把入口 WAV **归一化**（`normalizeWav`：只保留 `fmt ` + `data` 两块、重写 `RIFF`/`data` 尺寸为实际长度、16 位 PCM 顺带丢半帧尾字节、解析失败原样返回），单测用「声明 352,000 / 实际 1,000」的反证容器证明修好，并有一条「截断 WAV 走完 transcribe 全链」的用例断言真正落盘的是规范容器。
+    判据：修后同一份截断 jfk.wav 返回 9.016 s 音频的正确文本（而不是 exit 255）。
+
+201. **239 MB 权重必须校验再改名：`fetch` 不报错的静默截断会变成一句看不懂的 onnx 报错（2026-09-27 落地）**：`for await (chunk of response.body)` 在连接中断时**不一定抛**，而下载完就 `rename(part → target)` 会把半个权重变成「正式模型」；用户随后看到的是 onnxruntime 的加载失败或错字，排查方向全跑偏。
+    修法（两把锁）：① 实收字节必须等于 `content-length`（不等 → 当失败、换下一个源重试）；② 资产目录里钉 `sha256`，落盘前**流式**算摘要比对（不把 239 MB 读进内存），不符即删 `.part`、报「校验失败：model.int8.onnx（期望 c71f0ce0…，实际 …）」。`tokens.txt` 与权重**必须同源**（本仓 tokens sha256 `f449eb28…`，与 int8 权重同属 `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17`）。
+    判据：单测用打桩 fetch 覆盖三条路径——内容相符 → ready 且无 `.part` 残留、sha256 不符 → failed 且两个源都试过仍不落地、`content-length` 虚高 → failed。
+
+202. **官方 GitHub release 的资产在本机可能整体不可达（只有 API/页面 200），silero VAD 要从 HF 镜像取（2026-09-27 实测）**：`https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx` 在本机 `curl` 稳定超时（exit 28；同时 `github.com` 页面/API 是 200——同坑 184 族的「release-assets 单独不可达」）。HF 上 `csukuangfj/sherpa-onnx-vad-models` 之类路径 404，**实测可达的是** `https://hf-mirror.com/R4kSo1997/sherpa-onnx-silero-vad-v5/resolve/main/silero_vad.onnx`（643,854 B，sha256 `9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6`，与 sherpa-onnx 1.13.8 配套跑通 exit 0）。
+    设计口径：silero **不是主链路必需品**——资产目录把它标 `optional`（随包只有 643 KB），缺失时插件**自动回落直接档**（不因可选资产缺失让整条识别失败），下载失败也不判 failed；`preparation` 的步骤里它是一个 `skipped` 态而不是 `pending`。
+
+203. **本机跑 node 单测/门禁的两个环境前提：`--test-isolation=none` 或 `NODE_OPTIONS=--require tools/fix-execpath.cjs`（2026-09-27 实测，否则连既有插件一起全红）**：裸 `node --test plugins/dsh-whisper-local/test/…` 报 `error: expected absolute path: "--test-concurrency=0"`，门禁 `check-plugin-tests.mjs` 里每个插件都报 `error: expected absolute path: "--test"`——**这条错误不是 node 的，是 linker64 的**（同坑 172）：测试运行器用 `process.execPath` 起子进程，而这里 `process.execPath` 是 `/apex/com.android.runtime/bin/linker64`。
+    两个各自充分的修法（实测都单独可用）：① `--test-isolation=none`（连子进程都不起）；② `NODE_OPTIONS="--require $W/tools/fix-execpath.cjs"`（把 execPath 写回真实 node ELF）。跑整套门禁时两个都挂上最稳（`build-dev-apk.sh` 已挂 ②）。
+    附带一条**门禁判定口径**：`check-plugin-tests.mjs` 用 `/from 'node:test'/`（**单引号**）判「该插件用 node:test」，写 `import { test } from "node:test"`（双引号）会被判成 vitest 分支 → 报 `FAIL …（runner=vitest）` 并去 `npx vitest`，单测明明是绿的。新插件照仓内既有风格用单引号 import。

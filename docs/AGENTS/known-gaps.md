@@ -273,11 +273,38 @@ real-only 反证；判据全在设备事实上，证据不足判 `INCONCLUSIVE` 
   声明的条目，升级后仍在 ⇒ 语音输入页面在**升级设备**上依旧出现，而全新安装不会（见坑 191/192）。要彻底
   收敛，需要壳侧在合并时按工厂参考**剪除**未知 bundle（属独立改动，涉及快照事务语义，未做）。
 
-### 语音：流式听写（边说边出字）未实现（2026-09-27 登记）
+### 语音：流式听写（边说边出字）——改造清单与工作量（2026-09-27 评估，未实施）
 
-- **现状**：三个 provider 都是**整段识别**——`speech.transcribe` 的契约本身就是一次性的（一段 canonical WAV 进、一段文本出），所以 UI 上是「说完再出字」。
-- **要做出流式**需要三件东西，缺一不可：① 引擎侧一条**流式**路由（现有 `speech.transcribe` 不是）；② 本机流式模型（sherpa-onnx 官方 CLI 已随包提供 `sherpa-onnx-online-websocket-server` 与 `sherpa-onnx-vad-with-online-asr`，模型可用 `sherpa-onnx-streaming-zipformer-*` / `streaming-paraformer-*`，**都要另下权重**）；③ 自定义**客户端** voice-input 插件（上游 `ui-voice-input` 只按一次性契约工作）。
-- **不是缺陷**：这是产品形态选择，SenseVoice 的非流式识别在短句上延迟已很低（2.4 s 墙钟、其中 1.3 s 是模型装载）；若要做常驻进程还可把这 1.3 s 摊掉。
+**现状**：三个 provider 都是整段识别——`speech.transcribe` 的契约本身就是一次性的（一份 canonical WAV 进、一段文本出），
+客户端 `dsh-experimental-client-ui-voice-input` 也是「MediaRecorder 收完最后一坨 → `decodeAudioData` → 一次性 RPC」
+（`dsh-experimental-client-ui-voice-input/lib/client.js:4688`）。所以 UI 上是「说完再出字」，没有部分结果。
+
+**可行性（本机已实测到位）**：官方 Termux 预编译包自带流式二进制 `sherpa-onnx-online-websocket-server`
+（`--port` / `--tokens` / `--encoder` / `--decoder` / `--joiner`，或 `--paraformer-encoder/decoder`）与
+`sherpa-onnx-vad-with-online-asr`（长音频 VAD 切句批处理）。候选流式模型（HF 镜像 API 现数，均可达）：
+
+| 候选 | 用途 | int8 合计 |
+|---|---|---|
+| `csukuangfj/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23` | 中文流式（14M 参数，**小到可随包**） | **≈24 MB**（encoder 20.6 + decoder 1.8 + joiner 1.7 + tokens） |
+| `.../streaming-zipformer-bilingual-zh-en-2023-02-20` | 中英混合流式（按需下载） | ≈189 MB |
+| `.../streaming-paraformer-bilingual-zh-en` | 备选流式 | ≈226 MB |
+
+**标点**：HF 上没有可达的 online-punctuation 仓（官方那个是 GitHub release 资产，本机 release-assets 不可达，同坑 202）。
+建议形态 = **混合**：边说边用 14M zipformer 出部分结果，松手时用**已在包的离线 SenseVoice** 跑一遍终稿
+（标点 + ITN + 更高准确率）——两段都已有可跑实现，不必等标点模型。
+
+**改造面（三块，都不动引擎核）**：
+1. 设备侧新插件：14M 模型随包（`tools/snapshot-assets.json`），spawn 常驻 `sherpa-onnx-online-websocket-server`
+   （生命周期/健康/端口；库环境按坑 206 口径只给专属库目录、不挂 termux-exec），并注册自己的 HTTP 分块路由
+   （`/api/stt-stream/{start,chunk,finish}`；新路由必须过 `check-api-route-auth`），把 PCM 分块转投 WS 解码、回部分文本。
+2. 客户端新插件：用 AudioWorklet 取 16 kHz 单声道 PCM（MediaRecorder 给的是编码流，流式必须换通路），
+   ~200 ms 一块 POST，渲染部分结果，松手时替换为终稿并插入输入框；`ui-voice-input` 行停用以避免两个语音入口。
+3. 集成与验收：三层验收（含真机延迟实测）、流式不可用时回落离线档、许可通知登记（14M 模型 Apache-2.0）、文档与执行地图。
+
+**工作量（一人，含真机实测）**：设备侧 ≈1 天、客户端 ≈1~1.5 天、集成与验收 ≈0.5~1 天，合计 **约 3 天**。
+**主要风险**：① 浏览器侧 PCM 通路与重采样；② 常驻 WS 进程的生命周期（崩溃/端口/内存）；③ 部分结果的编辑语义（替换而非追加）；
+④ 中文流式模型无标点，必须靠终稿回扫（已设计）；⑤ 切后台时音频通路中断（可接受，需明示）。
+**不建议的替代**：轮询式「整段重转写」随录音变长线性变慢且抖动大；仅为省 ~1 s 模型装载而把离线档改成常驻 WS 服务，收益不足。
 
 ### 语音：SenseVoice 权重不随包 + VAD 默认关（2026-09-27 登记）
 

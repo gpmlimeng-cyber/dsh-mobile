@@ -797,3 +797,11 @@
     同族提醒：任何**官方预编译**的 Termux 二进制（不是本机自建）都别把前缀库塞进它的搜索路径。
 
 207. **`ctx.speechToText.snapshot()` 里的 `preparation` 是状态快照对象，`prepare()` 只能走注册表（2026-09-27 实测踩到）**：写引擎内自测时顺手写 `provider.preparation.prepare()`，引擎抛 `TypeError: provider.preparation.prepare is not a function`——`snapshot()` 返回的是**序列化状态**（`{phase, steps, error}`），真正的方法在注册表上：`ctx.speechToText.prepare(id, options)`（进度仍从 `snapshot().providers[].preparation` 读）。`transcribe` 同理走 `resolve(spec) + transcribe(spec, signal)`（这一对自测里一直是对的）。
+
+208. **共存包升级会丢用户下载的模型（同目录内、非快照成员的那些）（2026-09-27 实测对比）**：两次升级安装（指纹 `bf9333b5…`→`c46bc15e…`→`6c693463…`）后逐个核对 `home/.dsh/speech-to-text/`：
+    · 第二次装机后 `whisper/ggml-small-q5_1.bin`（190 MB，用户 12:53 下载、14:39 还在场）**消失**，同目录的快照成员 `ggml-tiny.bin` 被重写（mtime = 刷新时刻）；
+    · `sherpa/model.int8.onnx`（239 MB，14:41 下载）**保住**，同目录的快照成员 `tokens.txt`/`silero_vad.onnx` 被重写。
+    两次差异与「刷新时按上一次的用户数据暂存/快照成员集合收敛」相符——即**下载物落在快照成员所在目录里时，有被清掉的风险**（本次是 whisper 档中招、sherpa 档侥幸）。
+    影响：用户按需下载的 190 MB / 239 MB 权重可能每次升级都要重下（真机重下实测 41.8 s @190 MB）。
+    规避（择一）：① 下载目录移出快照成员所在目录（例如 `$DSH_HOME/stt-models/`，与 `speech-to-text/` 分开）；② 升级后由设置页重新准备（UI 已有进度与错误提示）。
+    判据：升级后 `ls files/home/.dsh/speech-to-text/*/` 逐个对照「快照成员 + 用户已下载档」，并对引擎内 `providers=` 行确认各档 `ready/unprepared` 与预期一致。

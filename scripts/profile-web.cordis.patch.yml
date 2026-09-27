@@ -165,7 +165,6 @@
     - id: whisper-local
       name: dsh-whisper-local
       config:
-        model: ggml-tiny.bin
         threads: 4
     - id: mimo-asr
       name: dsh-mimo-asr
@@ -175,6 +174,8 @@
 - id: speech-to-text-sensevoice
   disabled: true
 # 默认走本机 whisper（离线）。要用云端识别，在「设置 → 语音输入」里切换即可（选择会写回 profile）。
+# 默认走随包的 tiny（离线立即可用）；设置页「识别服务」里可直接切 base / small-q5 / small，
+# 后三档首次选中会走 preparation 下载（带进度），无需改配置。
 - id: speech-to-text
   config:
-    defaultProvider: whisper-local
+    defaultProvider: whisper-tiny

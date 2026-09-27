@@ -40,7 +40,7 @@ function register(config) {
 test("info：host-local + auto/zh/en/yue 等语言提示", () => {
   const provider = register({ modelDirectory: mkdtempSync(join(tmpdir(), "whisper-info-")) });
   assert.equal(provider.info.location, "host-local");
-  assert.equal(provider.info.id, "whisper-local");
+  assert.equal(provider.info.id, "whisper-tiny", "默认档（随包 tiny）的 provider id");
   for (const language of ["auto", "zh", "en", "yue"]) assert.ok(provider.info.languages.includes(language), language);
 });
 
@@ -53,6 +53,34 @@ test("启动阶梯：直连 → linker64 → sh -c，顺序与 argv 形态固定
   assert.deepEqual(ladder[0], { how: 'direct', cmd: '/x/whisper-cli', argv: ['-m', 'model', '-f', 'a.wav'] });
   assert.deepEqual(ladder[1], { how: 'linker64', cmd: '/system/bin/linker64', argv: ['/x/whisper-cli', '-m', 'model', '-f', 'a.wav'] });
   assert.deepEqual(ladder[2].argv, ['-c', 'exec "$0" "$@"', '/x/whisper-cli', '-m', 'model', '-f', 'a.wav']);
+});
+
+test("多档注册：内置目录的四档各注册一个 provider（设置页就是模型选择器）", () => {
+  const registered = [];
+  const ctx = { speechToText: { register: (p) => (registered.push(p), async () => {}) }, effect: (fn) => fn() };
+  plugin.apply(ctx, { modelDirectory: mkdtempSync(join(tmpdir(), "whisper-tiers-")) });
+  assert.deepEqual(registered.map((p) => p.info.id), ["whisper-tiny", "whisper-base", "whisper-small-q5", "whisper-small"]);
+  assert.ok(registered.every((p) => p.info.location === "host-local"));
+  assert.ok(registered.every((p) => typeof p.preparation?.prepare === "function"));
+});
+
+test("中文提示词：language=zh 时 argv 必须带 --prompt（whisper 简繁/标点矫正）", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "whisper-zh-"));
+  writeFileSync(join(dir, "ggml-tiny.bin"), "x");
+  // 假 CLI：把收到的参数原样打到 stdout，用来断言 argv
+  const script = join(dir, "fake-whisper-args");
+  writeFileSync(script, '#!/bin/sh\nprintf "%s " "$@"\n');
+  chmodSync(script, 0o755);
+  const provider = register({ modelDirectory: dir, model: "ggml-tiny.bin", binary: script, models: [{ id: "whisper-tiny", file: "ggml-tiny.bin" }] });
+  const result = await provider.transcribe({ audio: tinyWav(), language: "zh" }, new AbortController().signal);
+  assert.match(result.text, /-l zh/);
+  assert.match(result.text, /--prompt 以下是普通话的句子。/);
+  // yue（粤语）不在 whisper 语言表里 → 落到 zh，同样带提示词
+  const yue = await provider.transcribe({ audio: tinyWav(), language: "yue" }, new AbortController().signal);
+  assert.match(yue.text, /-l zh/);
+  // en 不带中文提示词
+  const en = await provider.transcribe({ audio: tinyWav(), language: "en" }, new AbortController().signal);
+  assert.doesNotMatch(en.text, /--prompt/);
 });
 
 test("模型缺失：preparation 报 unprepared，transcribe 给可执行错误（不 spawn 注定失败的进程）", async () => {

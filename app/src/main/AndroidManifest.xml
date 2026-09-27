@@ -26,6 +26,12 @@
        ② 壳侧在 WebChromeClient.onPermissionRequest 里 grant(RESOURCE_AUDIO_CAPTURE)。
        只做其中一件都会得到「麦克风权限未开启」的页面提示（实测）。 -->
   <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <!-- 关键（2026-09-27 实锤）：WebView 的录音**不只要 RECORD_AUDIO**——Chromium 的 cr_media 明确要求
+       「Requires MODIFY_AUDIO_SETTINGS and RECORD_AUDIO」，缺这条时报
+       `W cr_media: Requires MODIFY_AUDIO_SETTINGS and RECORD_AUDIO. No audio device will be available for
+       recording` → 页面 getUserMedia 抛 NotReadableError（"Could not start audio source"）。
+       这是 install 期即授予的普通权限，无需运行时申请。 -->
+  <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
   <!-- 无麦克风的设备（模拟器/部分平板）不得因此被商店或安装器排除。 -->
   <uses-feature android:name="android.hardware.microphone" android:required="false" />
 

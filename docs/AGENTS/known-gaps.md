@@ -311,3 +311,14 @@ real-only 反证；判据全在设备事实上，证据不足判 `INCONCLUSIVE` 
 - `model.int8.onnx`（239 MB）按需下载，首用需一次联网下载（下载完整性已用 `content-length` + sha256 双锁保证）。
 - VAD 档（`sherpa-onnx-vad-with-offline-asr` + silero）随包但默认 `vad: false`：短句（语音输入的主场景）直接档更快；长录音/多句场景可在 profile 行打开 `vad: true`。
 - `defaultProvider` 仍为 `whisper-tiny`（新装 APK 零下载即可用）；质量优先需在设置页切到 `sherpa-sensevoice`（首次触发下载）。
+
+### 快照里的包装脚本把主包路径烧死，共存包（dev）里不可用（2026-09-30 登记）
+
+- **现象**：dev 包（`com.deepcode.shell`）里执行 `$PREFIX/bin/tar` 报
+  `/data/user/0/com.dsharnessmobile.shell/files/usr/bin/tar.real: inaccessible or not found` —— 该脚本是壳侧
+  「GNU tar 压缩与执行拦截冲突修复」的包装器，`exec` 目标写死了**主包**的绝对路径。
+- **影响面**：所有 `run-as com.deepcode.shell` 里手工调用 `tar` 的场景（本轮换引擎时必须改调 `tar.real` 才走通）；
+  引擎内部若有 shell out 到 `tar` 的路径（插件包解包一类）同样会失败。同类包装器应一并排查
+  （`$PREFIX/bin/` 下凡是 `exec "<绝对路径>"` 的脚本都按同一规则失效）。
+- **正解**：包装器用**相对自身**的路径（`exec "$(dirname "$0")/tar.real" "$@"`）；短期规避是直接调 `tar.real`，
+  或退回系统 `/system/bin/tar`（toybox）。

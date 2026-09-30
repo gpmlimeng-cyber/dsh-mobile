@@ -45,6 +45,21 @@ if (!VER) {
   process.exit(2)
 }
 const OUT = join(ROOT, 'out', 'v' + VER)
+
+// ---- 真源 ⑤：applicationId（与 build-snapshot-013.mjs 共用同一解析式）----
+// 必须显式传给 gradle：否则 gradle 用自身默认值，而快照前缀由上面的真源决定，
+// 二者一旦分叉就产出「快照指向别的包」的 APK（历史缺陷：默认值曾分叉为 deepcode / 基线包）。
+const APP_ID = process.env.DSH_APPLICATION_ID
+  || (() => {
+       for (const gradle of gradleCandidates) {
+         if (!existsSync(gradle)) continue
+         const m = /applicationId\s*=\s*providers\.gradleProperty\("applicationIdOverride"\)\.getOrElse\("([^"]+)"\)/
+           .exec(readFileSync(gradle, 'utf8'))
+         if (m) return m[1]
+       }
+       return 'com.dsharnessmobile.shell'
+     })()
+console.log(`[build-apk] applicationId = ${APP_ID}`)
 const SUFFIX_DEFAULT = '-ci'
 
 // ---- 真源 ②：注入集（scripts/plugin-dirs.json；与本地链 build-apk-013.ps1 共用同一常量）----
@@ -356,11 +371,14 @@ try {
   log(`snapshot.sha256 = ${sha}`)
   // ST-04 严格复核：本 ABI 的 tar 与刚写入的声明值必须逐字节一致（--require：缺件即失败，不得 SKIP）。
   run('node', [gate('check-snapshot-fingerprint.mjs'), '--require'])
+  // 快照前缀必须等于本次构建的 applicationId —— 挡住「APK 是 A 包、快照指向 B 包」的跨 App 错配回归。
+  // 历史缺陷：快照装配脚本硬编码基线包，而 gradle 的 applicationId 默认是二开包，二者分叉时静默出坏包。
+  run('node', [gate('check-snapshot-prefix.mjs'), snapIn, APP_ID])
 
   // ---- 7. gradle assembleDebug（跨平台 gradlew）----
   log('构建 APK…')
   const gradleCmd = process.platform === 'win32' ? 'gradlew.bat' : './gradlew'
-  const gr = spawnSync(gradleCmd, [':app:assembleDebug', '--no-daemon', `-PversionNameSuffix=${SUFFIX}`], { cwd: apkDir, stdio: 'inherit', shell: process.platform === 'win32' })
+  const gr = spawnSync(gradleCmd, [':app:assembleDebug', '--no-daemon', `-PversionNameSuffix=${SUFFIX}`, `-PapplicationIdOverride=${APP_ID}`], { cwd: apkDir, stdio: 'inherit', shell: process.platform === 'win32' })
   if (gr.status !== 0) { console.error(`gradle 失败 (${gr.status})`); process.exit(1) }
 
   // ---- 8. 产物拷贝（产物名与输出目录都来自 gradle 真源）----

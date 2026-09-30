@@ -177,6 +177,19 @@ if (Test-Path $overlayManifest) {
 $GradleVer = (Select-String -Path (Join-Path $apkDir "app\build.gradle.kts") -Pattern 'versionName = "([^"]+)"').Matches[0].Groups[1].Value
 $Out = Join-Path $Root ("out\v" + $GradleVer)
 $apkDir = Join-Path $Root "dsh-mobile-apk"
+
+# 真源：applicationId（与 build-snapshot-013.mjs / build-apk.mjs 共用同一解析式）
+# 必须与快照装配取同一个值：gradle 不传 override 时用自身默认值，快照前缀也由同一默认值派生；
+# 二者曾分叉（默认值 = 二开包 deepcode vs 快照脚本硬编码基线包）→ 产出「快照指向另一个 App」的坏包。
+# 显式指定包名时用 DSH_APPLICATION_ID 同步（两条链与 CI 都读它）。
+$AppId = $env:DSH_APPLICATION_ID
+if (-not $AppId) {
+    $m = [regex]::Match((Get-Content (Join-Path $apkDir "app\build.gradle.kts") -Raw),
+        'applicationId\s*=\s*providers\.gradleProperty\("applicationIdOverride"\)\.getOrElse\("([^"]+)"\)')
+    if ($m.Success) { $AppId = $m.Groups[1].Value }
+}
+if (-not $AppId) { $AppId = "com.dsharnessmobile.shell" }
+Write-Host "== 目标 applicationId = $AppId（快照前缀与 gradle 同源）=="
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 
 # 注入集单一常量（0.13.8-b ST-06 / F-ENV-04）：dirs/externals 都在 scripts/plugin-dirs.json，
@@ -398,9 +411,12 @@ foreach ($abi in @('arm64', 'x86_64')) {
     # 两个 ABI 各自构建时各自声明值与各自 tar 一致——不得再出现「入库值是单一 ABI 构建的事实」。
     node (Join-Path $Root "scripts\check-snapshot-fingerprint.mjs") --require 2>&1
     if ($LASTEXITCODE -ne 0) { throw "快照指纹对账失败（$abi）：tar 与声明值不一致，拒绝打包" }
+    # 快照前缀必须等于本次构建的 applicationId（防「APK 是 A 包、快照指向 B 包」的跨 App 错配回归）
+    node (Join-Path $Root "scripts\check-snapshot-prefix.mjs") $snapIn $AppId 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "快照前缀与 applicationId 不一致（$abi）：拒绝打包" }
     Push-Location $apkDir
     try {
-        & .\gradlew :app:assembleDebug --no-daemon -PversionNameSuffix="$Suffix" 2>&1 | Select-Object -Last 4
+        & .\gradlew :app:assembleDebug --no-daemon -PversionNameSuffix="$Suffix" -PapplicationIdOverride="$AppId" 2>&1 | Select-Object -Last 4
         if ($LASTEXITCODE -ne 0) { throw "gradle 构建失败（$abi）" }
         $ver = "$GradleVer$Suffix"
         Copy-Item "app\build\outputs\apk\debug\app-debug.apk" (Join-Path $Out "dsh-mobile-apk-v$ver-$abi.apk") -Force

@@ -45,6 +45,20 @@ if (process.platform === 'win32' && process.env.DSH_NO_WSL_REEXEC !== '1') {
 }
 function log0(msg) { console.log(`[build-013/${ABI}] ${msg}`) }
 
+/** 目标包名单一真源：DSH_APPLICATION_ID > app/build.gradle.kts 的 applicationIdOverride 默认值 > 基线包。
+ *  与 scripts/build-apk.mjs 使用同一解析式，保证「快照前缀」与「APK applicationId」永不分叉。 */
+function resolveApplicationId() {
+  const fromEnv = process.env.DSH_APPLICATION_ID
+  if (fromEnv) return fromEnv
+  const gradle = join(ROOT, 'app', 'build.gradle.kts')
+  if (existsSync(gradle)) {
+    const m = /applicationId\s*=\s*providers\.gradleProperty\("applicationIdOverride"\)\.getOrElse\("([^"]+)"\)/
+      .exec(readFileSync(gradle, 'utf8'))
+    if (m) return m[1]
+  }
+  return 'com.dsharnessmobile.shell'
+}
+
 /** Python 命令名：Windows 用 python，Linux/WSL 用 python3（0.13.5 W5 起构建在 WSL 内跑）。 */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3'
 
@@ -73,7 +87,12 @@ const MIRRORS = PREINSTALL.mirrors
 // 注：termux 无 `licenses` 包（实测索引不存在）——usr/share/LICENSES 标准文本来自基座 bootstrap 或本脚本的
 // 仓库 LICENSE 复制（见 ensureLicenseTexts；x64 基座曾缺 → 架构无关确定化）。
 const TARGETS = PREINSTALL.targets
-const NEW_PREFIX = '/data/user/0/com.dsharnessmobile.shell/files/usr'
+// 目标包名单一真源（对齐 app/build.gradle.kts 的 applicationId；禁止在此硬编码基线包）。
+// 历史缺陷：这里写死基线包，而 Gradle 的默认 applicationId 是二开包 com.deepcode.shell，
+// 于是默认构建产出「APK 属于 com.deepcode.shell、快照内 1488 处路径却指向 com.dsharnessmobile.shell」
+// 的跨 App 前缀错配——那些路径在目标 App 的挂载命名空间里根本不存在。
+const APP_ID = resolveApplicationId()
+const NEW_PREFIX = `/data/user/0/${APP_ID}/files/usr`
 const OLD_PREFIX = '/data/data/com.termux/files/usr'
 const BASE_DIR = join(ROOT, '.deploy-tmp', ABI === 'arm64' ? 'arm64-base' : 'x64-base')
 const OUT_DIR = join(ROOT, '.deploy-tmp', 'snapshot-013', ABI)
@@ -805,7 +824,7 @@ if (ABI === 'arm64') {
 //     type"——构建期补主文件 + var/cache/apt + var/lib/apt/lists 目录骨架。
 // 真实二进制改名 .real；wrapper 读 TERMUX__PREFIX（引擎 env 注入）并回退硬编码内嵌前缀。
 log('生成包管理器编译期路径覆盖（apt.conf 主文件 + wrapper）…')
-const PKG_PREFIX = '/data/user/0/com.dsharnessmobile.shell/files/usr'
+const PKG_PREFIX = NEW_PREFIX  // 同源，勿再硬编码（曾导致 apt.conf / install-clang 模板写错包名）
 const binDir = join(U, 'bin')
 const wrapHead = `#!/system/bin/sh\n# dsh-mobile 0.13.0: ${PKG_PREFIX} 编译期路径覆盖 wrapper（见 M3-VERIFICATION-NOTES §4）\nB="\${TERMUX__PREFIX:-${PKG_PREFIX}}"\nexport PREFIX="$B"\nexport APT_CONFIG="$B/etc/apt/apt.conf"\n`
 // apt.conf 主文件（APT_CONFIG 指向；覆盖全部编译期旧前缀目录）。

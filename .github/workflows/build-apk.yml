@@ -24,6 +24,10 @@ on:
         description: 'APK 版本后缀（默认空=正式版纯净版本号；测试构建显式传 -fix 等）'
         type: string
         default: ''
+      application_id:
+        description: '目标 applicationId（留空 = 取 app/build.gradle.kts 的 applicationIdOverride 默认值）'
+        type: string
+        default: ''
 
 jobs:
   build:
@@ -35,6 +39,9 @@ jobs:
     env:
       # build-apk.mjs 依赖本仓库顶层 scripts/plugins/vendor/base；apk 仓库 = $GITHUB_WORKSPACE
       DSH_APK_DIR: ${{ github.workspace }}
+      # 目标包名单一真源：快照装配（build-snapshot）与 gradle 必须拿到同一个值。
+      # 留空时两个脚本各自从 app/build.gradle.kts 解析同一默认值，仍保持同源。
+      DSH_APPLICATION_ID: ${{ github.event.inputs.application_id }}
     steps:
       - name: 检出本仓库（含 Git LFS 底座归档）
         uses: actions/checkout@v4

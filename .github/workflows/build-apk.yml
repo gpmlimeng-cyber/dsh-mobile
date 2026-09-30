@@ -28,6 +28,10 @@ on:
         description: '目标 applicationId（留空 = 取 app/build.gradle.kts 的 applicationIdOverride 默认值）'
         type: string
         default: ''
+      base_release:
+        description: '底座归档（base/*.tar.xz）所在 Release tag；缺件会明确失败并给出上传指引'
+        type: string
+        default: 'base-assets'
 
 jobs:
   build:
@@ -43,11 +47,43 @@ jobs:
       # 留空时两个脚本各自从 app/build.gradle.kts 解析同一默认值，仍保持同源。
       DSH_APPLICATION_ID: ${{ github.event.inputs.application_id }}
     steps:
-      - name: 检出本仓库（含 Git LFS 底座归档）
+      # 底座归档（base/*.tar.xz）历史上走 Git LFS，但 LFS 对象在服务器上不存在（404，见 issue #2），
+      # lfs: true 会让 checkout 阶段直接失败、且失败信息不可操作。改为不拉 LFS，真身由下一步从 Release 取。
+      - name: 检出本仓库（底座归档改挂 Release，不再依赖 LFS）
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: true
+          lfs: false
+
+      - name: 取底座归档（GitHub Release；缺件即明确失败）
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_RELEASE: ${{ github.event.inputs.base_release || 'base-assets' }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for f in base-usr-arm64.tar.xz base-usr-x86_64.tar.xz base-dsh.tar.xz; do
+            sz=$(stat -c%s "base/$f" 2>/dev/null || echo 0)
+            [ "$sz" -ge 1000000 ] || missing="$missing $f"
+          done
+          if [ -z "$missing" ]; then
+            echo "base/ 已是真实归档（非 LFS 指针），跳过下载："
+            ls -l base/
+            exit 0
+          fi
+          echo "== 从 Release '$BASE_RELEASE' 取底座归档（缺:$missing）=="
+          for f in base-usr-arm64.tar.xz base-usr-x86_64.tar.xz base-dsh.tar.xz; do
+            sz=$(stat -c%s "base/$f" 2>/dev/null || echo 0)
+            if [ "$sz" -ge 1000000 ]; then echo "  已有 $f（$sz B）"; continue; fi
+            if ! gh release download "$BASE_RELEASE" --pattern "$f" --dir base --clobber; then
+              echo "::error::底座 $f 无法获取：Release '$BASE_RELEASE' 中没有该资产。"
+              echo "::error::请在持有底座归档的机器上执行： sh scripts/upload-base-assets.sh <底座目录> $BASE_RELEASE"
+              echo "::error::背景见 issue #2（原 Git LFS 对象在服务器上不存在）。"
+              exit 1
+            fi
+          done
+          ls -l base/
 
       - name: 准备运行时（node；dsh-client-ui-responsive 的 tsdown 要求 node ^22.18 || >=24.11）
         uses: actions/setup-node@v4

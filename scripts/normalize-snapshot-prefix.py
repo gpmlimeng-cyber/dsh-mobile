@@ -62,7 +62,7 @@ def main() -> int:
     old_u, old_d = f'/data/user/0/{old}'.encode(), f'/data/data/{old}'.encode()
     new_u, new_d = f'/data/user/0/{target}'.encode(), f'/data/data/{target}'.encode()
 
-    changed, skipped_binary, scanned = 0, 0, 0
+    changed, skipped_binary, skipped_big, scanned = 0, 0, 0, 0
     inbuf, outbuf = io.BytesIO(raw), io.BytesIO()
     with tarfile.open(fileobj=inbuf, mode='r:') as tin, \
             tarfile.open(fileobj=outbuf, mode='w', format=tarfile.PAX_FORMAT) as tout:
@@ -84,8 +84,14 @@ def main() -> int:
                 else:
                     tout.addfile(m)
                 continue
-            if not m.isfile() or m.size > MAX_INLINE:
-                tout.addfile(m)  # 目录/硬链接/超大成员：元数据原样透传
+            if not m.isfile():
+                tout.addfile(m)  # 目录/硬链接：无内容，元数据透传
+                continue
+            if m.size > MAX_INLINE:
+                # 大文件：必须给 fileobj —— tarfile 对「非零 size 的正规文件」只传 TarInfo 会抛
+                # ValueError: fileobj not provided for non zero-size regular file（本机实测踩到）。
+                tout.addfile(m, tin.extractfile(m))
+                skipped_big += 1
                 continue
             scanned += 1
             data = tin.extractfile(m).read()
@@ -106,7 +112,8 @@ def main() -> int:
         f.write(out)
 
     after = scan(out)
-    print(f'[snapshot-prefix] 扫描 {scanned} 成员，改写 {changed} 个，跳过 ELF {skipped_binary} 个；'
+    print(f'[snapshot-prefix] 扫描 {scanned} 成员，改写 {changed} 个，跳过 ELF {skipped_binary} 个、'
+          f'大文件透传 {skipped_big} 个；'
           f'归一后分布={dict(after.most_common(5))}')
 
     if after.get(target, 0) == 0 or (total and after.get(old, 0) > after.get(target, 0)):

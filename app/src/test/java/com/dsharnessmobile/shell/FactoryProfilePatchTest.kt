@@ -86,6 +86,43 @@ class FactoryProfilePatchTest {
   }
 
   @Test
+  fun mergeNeverGluesTwoBlocksIntoOneLine() {
+    // 真机实锤的回归（2026-09-27）：工厂把某行的 disabled 从 false 纠正为 true 时，旧实现的
+    // DISABLED_LINE 用 \s 匹配、替换范围跨过行尾，把紧随其后的块拼成 `disabled: true- id: ...`
+    // ——整个 profile 补丁 YAML 解析失败、引擎起不来（boot-fail: failed to parse overlay）。
+    // 判据：合并结果里**任何** `disabled: <bool>` 之后必须是换行，且块数不减。
+    val live = """
+      - id: speech-to-text-sensevoice
+        disabled: false
+      - id: llm-pi-ai
+        config:
+          providers: {}
+    """.trimIndent() + "\n"
+    val factory = """
+      - id: speech-to-text-sensevoice
+        disabled: true
+      - id: llm-pi-ai
+        config:
+          providers: {}
+    """.trimIndent() + "\n"
+
+    val result = FactoryProfilePatch.merge(live, factory)
+
+    // 粘连的判据：`disabled: <bool>` 之后**同一行内**紧跟非空白内容（用 [ \t] 而不是 \s，
+    // 否则正则自己会跨行命中，判据失效——本测试首版就踩了这个自伤）。
+    val glued = Regex("""disabled:[ \t]*(true|false)[ \t]*\S""")
+    assertFalse("合并后不得出现 `disabled: true- id:` 这类粘连", glued.containsMatchIn(result.text))
+    assertEquals(
+      "块数必须保持两个（粘连会让后一个块消失）",
+      2,
+      FactoryProfilePatch.topLevelBlocks(result.text).count { it.contains("- id: ") },
+    )
+    assertEquals(true, FactoryProfilePatch.disabledValue(
+      FactoryProfilePatch.topLevelBlocks(result.text).first { it.contains("speech-to-text-sensevoice") },
+    ))
+  }
+
+  @Test
   fun userOwnedBlocksSurviveUntouched() {
     val factory = "- id: bash-sandbox\n  disabled: true\n"
     val live = """

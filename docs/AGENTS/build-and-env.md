@@ -37,6 +37,15 @@ cd ..\dsh-client-ui-responsive && npm test && npm run build
 cd ..\plugins\dsh-android-<pkg> && npm run build
 ```
 
+**arm64 真机构建（在壳内直接构建，2026-09-25 打通）**：本机无 Windows/WSL/`pwsh`，走 Node 链 + gradle 原生：
+```bash
+node scripts/build-apk.mjs --abi arm64 --suffix <sfx>    # 门禁 → 注入 → gradle → out/v<ver>/
+./gradlew :app:assembleDebug --no-daemon -PversionNameSuffix=<sfx>   # 快照已写进 assets 时，只跑打包
+```
+环境前提与五个硬坑（`execPath`=linker64、`execSync` 默认 shell 被劫持、`LD_PRELOAD` 经 reroute 丢失、`process.platform=android`、SDK 工具全 x86_64）见 `gotchas.md` 172-175 与 176-178；插件 `lib/` 需先 `npm ci --ignore-scripts && npm run build`（见坑 175）。
+
+**共存安装（deepcode 二开）**：`applicationId` 改由 `-PapplicationIdOverride=<id>` 注入，默认二开值 `com.deepcode.shell`；不传即用该默认值，与基线主包 `com.dsharnessmobile.shell` 并存（不同包名 = 独立 data 目录与权限授予，Shizuku / All Files Access 需按新包重授）。`namespace` 保持基线值（R 类与既有代码引用不动），桌面显示名由 `app_name` 承担（二开包为 `DeepCode Dev`）。**引擎端口同样必须可区分**：`BuildConfig.ENGINE_PORT` 由 `-PenginePort=<n>` 注入（默认基线 3080、二开 3081，见坑 179）——两包同端口时第二个包必然 `EADDRINUSE` 起不来（界面只报「启动失败」）。
+
 > **多线程/并行优先铁律（2026-09-08 用户定例，改任何构建脚本都适用）**：编译、构建、打包、归档、解压**一律使用多线程脚本**，不得用单线程等价命令替代——目的就是省掉一切可以省掉的构建时间。现行落点：
 > - 快照归档 `tar -c ... | xz -T0 -6`（多线程压缩；裸 `tar -cJf` 单线程 ≈380s vs `xz -T0` ≈48s，2c 实测）；
 > - 快照/基座解压 `xz -dT0 | tar -x`（多线程解压，替代 `tar -xJf` 的单线程解码）；
@@ -119,3 +128,88 @@ cd ..\plugins\dsh-android-<pkg> && npm run build
 | PowerShell 转义 | 双引号内 `$var` 本地展开（引号地狱）；二进制经 `adb exec-out`/push 传输 | 坑 8 |
 | ABI 匹配 | debug 包默认 x86_64 快照，装 arm64 真机必崩；构建/安装前核对（3.2 步 4） | 坑 18 |
 | 工作树行尾噪声 | `git status` 的 ` M` 与 `check-patch-mirror` 的「仅行尾差异」WARN 常来自 autocrlf（一侧检出为 CRLF），**不是**内容漂移。先逐字节复核（`cmp a b` / `git diff --ignore-cr-at-eol`）再决定要不要动文件，别按噪声改内容 | 铁律 5/6 |
+| arm64 真机构建（壳内） | 无 `pwsh`：直接 `node scripts/build-apk.mjs`；工具链（JDK17 / aapt2 / aidl / zipalign / apksigner / adb）取 Termux 源 + 自实现，SDK 自带 x86_64 工具需覆盖；后台任务不继承 `$PREFIX`、`/tmp` 不可写，临时与日志一律落工作区 | 坑 172-178 |
+| 共存安装（二开） | `-PapplicationIdOverride=<id>`（默认 `com.deepcode.shell`）与主包并存；`versionName` 用 `-PversionNameSuffix` 区分；两包各自授权 | 上文「共存安装」 |
+| 壳内跑门禁必须先修 execPath | `NODE_OPTIONS=--require <工作区>/tools/fix-execpath.cjs`。本机 `process.execPath` = `linker64` 且 `execve('/bin/sh')` 被 termux-exec 重写 ⇒ 门禁里 `spawnSync(process.execPath)`/`execSync` 一律失败，且**报错文案会指向别处**（例：`check-browser-syntax-floor` 报「esbuild 对本平台不可用」） | 坑 172、**坑 186** |
+
+### 3.5 引擎升级（就地升级 dev 包运行时；2026-09-26 打通）
+
+适用场景：不重建 APK/快照，只把**共存包**（`com.deepcode.shell`）里的 `@deepseek-ai/dsh` 树升到新版本。
+工具在工作区（非本仓）：`tools/engine-overlay-bump.mjs`、`tools/fetch-engine-tree-fast.sh`、
+`tools/registry-from-tree.mjs`、`tools/deploy-engine-to-dev.sh`。
+
+1. **解析新引擎版本线**：`npm view @deepseek-ai/dsh dist-tags`。注意**并非所有 `@deepseek-ai/*` 与引擎同版本**
+   （既有 `4.0.2`/`1.0.1`/`0.1.2` 等异构线），且**部分包在新版根本没发布**（npm 404）——逐包拉取前必须核对。
+2. **升级登记表**：`node tools/engine-overlay-bump.mjs <新版本> <npm解析树node_modules> <输出json>`。
+   规则：旧值 == 旧引擎版本 ⇒ 锁步跟随新版本；其余优先取 npm 实际解析版本；`keepUnpublished` 原样保留。
+3. **按登记表逐包拉取建树**：`bash tools/fetch-engine-tree-fast.sh <registry.json> <stageRoot>`（curl 直取
+   npm tarball + 12 路并行；`npm pack` 逐包启动在本机慢一个数量级）。**必须再做一次完整性补漏**
+   （按 `<name>\t<ver>\t<dest>` 清单核对 `dest/package.json` 是否存在），再用 `cp -an` 从 npm 解析树
+   无覆盖补齐第三方依赖——否则会缺 `semver`/`cordis` 这类被平台过滤跳过的包。
+4. **补丁链**：`node scripts/patches/apply-patches.mjs <stageRoot> --apply --scope engine`。要求
+   `ALL OK（N/N）`；「不适用」是合法结果（上游删/重写特性，见坑 182），「锚点未命中」才是真漂移。
+5. **平台兼容两件套**（0.1.7 起必需，见坑 180/181）：① 放 F9 垫片包
+   `<engine>/node_modules/node-addon-require-builtin/node_modules/node-addon-require-builtin-android-arm64`
+   （源码 `tools/f9-android-shim/`）；② 在 `profiles/web/compatibility.json` 写精确版本豁免，
+   否则移动插件（`shell-termux`/`ui-responsive`）会被兼容闸门停用——**boot 成功但能力残缺**。
+6. **部署与回滚**：`bash tools/deploy-engine-to-dev.sh <stageRoot>`（`run-as` 以该包 uid 换树：旧树留档
+   `dsh.old-<版本>`、拉起重验）；出问题用 `bash tools/deploy-engine-to-dev.sh - --restore` 一键回滚，
+   或重装 APK 整体回到快照版本。验证判据：`netstat -lnt` 有该包端口 + `boot-diag.log` 出 `page-ready`
+   + `boot-fail.log` mtime 不再前进 + `grep -c "disabling profile plugin row" engine.log` = 0。
+
+7. **本机没有 adb 时的换树变体（2026-09-30 打通）**：`tools/deploy-engine-to-dev.sh` 内部走 `adb shell run-as`，
+   而本机 uid 2000 与 app uid 都起不了 adb server ⇒ 改用工作区脚本 `tools/deploy-engine-inapp.sh`：
+   主包工作区 `python3 -m http.server 8899 --bind 127.0.0.1` 喂 tar.xz（dev 包读不了 /sdcard，但能连回环），
+   dev 包内 `curl` → `xz -d` → 留档 `dsh.old-<旧版本>` → `$PREFIX/bin/tar.real -xf`。
+   注意 app 上下文三条环境（`LD_LIBRARY_PATH`/`LD_PRELOAD`/`node` 另需 `OPENSSL_CONF`）与 `$PREFIX/bin/tar` 是包装脚本
+   （`tar.real` 烧的是主包路径）——细节见坑 210。
+
+> 在 `run-as` 里手工跑引擎 CLI（诊断用）必须带全套环境，否则是**假错误**：`LD_LIBRARY_PATH=<prefix>/lib`、
+> `LD_PRELOAD=<prefix>/lib/libtermux-exec-ld-preload.so`、`PATH=<prefix>/bin:/system/bin`、`DSH_HOME=<该包 home>/.dsh`、
+> `OPENSSL_CONF=<prefix>/etc/tls/openssl.cnf`（缺最后一条报 `OpenSSL configuration error`，缺前两条报 `libz.so.1 not found`）。
+
+### 3.6 把新引擎烘进可安装 APK（二开产物；2026-09-26 打通）
+
+适用：出一个**装上就自带新引擎**的 APK（不依赖设备侧手工换树）。基座用已注入的
+`.deploy-tmp/build-arm64/snap-final2.tar.xz`（0.1.5 引擎 + 全部插件注入，163 MB），只换引擎子树。
+
+1. **备好引擎树**（§3.5 步 1-5 全绿）后必须补两步——构建链原本在**快照构建段**做，手工建树会整段跳过（坑 185）：
+   - `python3 tools/normalize-modes.py <stageRoot>`：目录 0o700、ELF 或 `#!` 文件 0o700、其余 0o600；复跑须 `changed=0`。
+   - `node scripts/check-browser-syntax-floor.mjs --degrade --stage <stageRoot>` 原地降级到 chrome87，随后
+     `--scan <stageRoot>` 必须全绿（判据 1 零违规 + 判据 2 差分归零）。
+2. **换引擎子树**：`python3 tools/rebuild-snapshot-engine.py <base.tar.xz> <engineTree> <out.tar>`（流式：跳过并重写
+   `usr/lib/node_modules/@deepseek-ai/dsh` 前缀下的全部成员，其余成员原样透传；`<engineTree>` 指 `.../dsh` 目录本身）。
+   再 `xz -T0 -6` 压回 `.tar.xz`（遵守多线程铁律）。本机实测：993.7 MB tar → 190.5 MB xz，压缩约 30 分钟。
+3. **出 APK**：`bash tools/build-dev-apk.sh <snap.tar.xz>`（工作区脚本，只把环境钉死后调
+   `node scripts/build-apk.mjs --abi arm64 --snapshot <tar>`）。本机私有环境（后台任务不继承 `$PREFIX`，一律绝对路径）：
+   `ANDROID_HOME=$PREFIX/lib/android-sdk`、`JAVA_HOME=$PREFIX/lib/jvm/java-17-openjdk`、`GRADLE_USER_HOME=~/.gradle`、
+   `PATH` 首位放工作区 `tools/bin`（tar 包装器：xz 子进程要 `LD_PRELOAD`）、
+   `NODE_OPTIONS=--require <工作区>/tools/fix-execpath.cjs`（**必须**，否则门禁里凡是
+   `spawnSync(process.execPath)` 都失败——坑 186）。`--snapshot` 档跑完整门禁集（注入前 + 注入后 20 余条）+
+   `gradle :app:assembleDebug`；注入链会把 `scripts/profile-web.cordis.patch.yml` 写给全部装配 profile
+   （声音输入停用等改动随之进包），并按流程做权限归一化。
+3.5 **语音输入资产（工作区注入，2026-09-27）**：本机 STT 后端 `whisper-cli` 是本机原生编译产物、模型是
+   77 MB 二进制，二者都不进仓、也不在 inject-all 的注入面里。做法：`tools/add-snapshot-assets.py <引擎换好后的tar> <新tar> tools/snapshot-assets.json`
+   （成员：`usr/bin/whisper-cli`、`usr/lib/dsh-whisper/{libwhisper,libggml*,libc++_shared}.so` 及其 `SONAME` 符号链接、
+   `home/.dsh/speech-to-text/whisper/ggml-tiny.bin`；权限按内容给：ELF→0o700、数据→0o600）。
+   两个 provider 插件本体走正常注入链（`scripts/plugin-dirs.json` 的 `externals`），profile 行与
+   `defaultProvider` 在 `scripts/profile-web.cordis.patch.yml` 末尾；**voice-input bundle 由
+   `scripts/snapshot-config/profile-bundles.json` 保证登记进 profile 的 `dsh.profile.bundles`**（否则注册表缺失）。
+   壳侧还需 `AndroidManifest.xml` 的 `RECORD_AUDIO` + MainActivity 的 `onPermissionRequest`（两者缺一，页面都会说
+   「麦克风权限未开启」）。踩坑与判据见坑 193-195。
+
+ 3.6 **sherpa-onnx / SenseVoice 资产（同上注入面，2026-09-27）**：第三路本机后端用 **sherpa-onnx 官方
+    Android aarch64 Termux 预编译包**（本机实测可跑，见坑 199），同一份 `tools/snapshot-assets.json` 里追加成员：
+    `usr/bin/{sherpa-onnx-offline,sherpa-onnx-vad-with-offline-asr}`、`usr/lib/sherpa-onnx/{libonnxruntime,libc++_shared}.so`、
+    `home/.dsh/speech-to-text/sherpa/{tokens.txt,silero_vad.onnx}`（**只带专属库目录**：CLI 的 NEEDED 只有
+    onnxruntime 与 libc++，`libsherpa-onnx-c-api/cxx-api.so` 是给 node/JNI 绑定用的，不随包）。
+    239 MB 的 `model.int8.onnx` **不进快照**（也不进 APK），由插件的 `preparation.prepare()` 按需下载并做
+    `content-length` + sha256 双校验（坑 201）；silero 是可选资产，缺失自动回落直接档（坑 202）。
+    注意 `add-snapshot-assets.py` 的**输出是未压缩 tar**（用法即 `<in.tar.xz> <out.tar>`）：要喂给
+    `build-apk.mjs --snapshot` 必须先自己压回 xz（本次 `xz -T6 -1 -c`，343 MB）；该中间档的 preset 与最终产物无关
+    （inject-all 会按 `DSH_INJECT_PRESET` 重压一次）。
+
+4. **装机（共存包）**：`adb push` APK 到 `/data/local/tmp` 后走 MIUI 安装器
+   `am start -n com.miui.packageinstaller/com.miui.packageInstaller.InstallStart -a android.intent.action.VIEW -d file:///data/local/tmp/<apk> -t application/vnd.android.package-archive`
+   （`adb install` 在本机被「USB 安装」闸门拒，坑 174；APK 必须先落到 `/sdcard` 或 `/data/local/tmp`——工作区在应用私有目录里，uid 2000 读不到）。装完核对：`ENGINE_PORT` 该包独占（主包 3080 / dev 包 3081）、
+   引擎版本 `0.1.7-rc.2`、`boot-diag.log` 出 `page-ready`。

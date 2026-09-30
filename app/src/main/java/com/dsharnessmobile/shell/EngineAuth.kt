@@ -45,8 +45,9 @@ object EngineAuth {
   private const val TAG = "dsh-engine-auth"
   private const val PREFS = "dsh_engine_auth"
   private const val KEY_COOKIE = "cookie"
-  const val AUTHORITY = "127.0.0.1:3080"
-  const val BASE_URL = "http://$AUTHORITY"
+  // deepcode 二开：authority 与引擎端口同源（BuildConfig.ENGINE_PORT），非 const（值来自构建配置）。
+  val AUTHORITY = "127.0.0.1:${BuildConfig.ENGINE_PORT}"
+  val BASE_URL = "http://$AUTHORITY"
   private const val COOKIE_NAME_PREFIX = "dsh-auth-"
   private const val TOKEN_LINE = "dsh web: "
   internal val TOKEN_RE = Regex("""dsh web: \S*/\?token=([A-Za-z0-9_\-]{40,})""")

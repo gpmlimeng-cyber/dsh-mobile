@@ -23,11 +23,11 @@ internal object UserCopy {
 
   // ── 应用自称（0.14.1 批 3 / P3-2）────────────────────────────────────────
   //
-  // 唯一用词 = `DeepCode`（桌面图标 `strings.xml` 的 `app_name` 就是它，`docs/PROMOTION-PLAN.md`
-  // §10.7 也拍板「应用名用 DeepCode」）。旧文案里 `DSH` / `dsh` / `DeepSeek Harness` 三个名字
-  // 混用，用户看到的是「四个名字的应用」。这三个旧词现在只允许作为**内部标识**存在
-  // （渠道 ID、虚拟屏名前缀、日志 tag、代码注释），不得进用户可见文案。
-  const val APP_NAME = "DeepCode"
+  // 唯一用词 = `DeepCode Dev`（桌面图标 `strings.xml` 的 `app_name` 就是它——共存包刻意带 ` Dev`
+  // 后缀以便与主包区分；`UserCopyTest.appNameIsTheLauncherName` 就是守这条一致性的）。旧文案里
+  // `DSH` / `dsh` / `DeepSeek Harness` 三个名字混用，用户看到的是「四个名字的应用」。这三个旧词
+  // 现在只允许作为**内部标识**存在（渠道 ID、虚拟屏名前缀、日志 tag、代码注释），不得进用户可见文案。
+  const val APP_NAME = "DeepCode Dev"
 
   /** 无障碍服务名（系统设置里用户要照着找的那一项）。 */
   const val A11Y_SERVICE_NAME = "$APP_NAME 设备控制"

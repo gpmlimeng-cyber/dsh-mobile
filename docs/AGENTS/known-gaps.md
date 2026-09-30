@@ -214,3 +214,111 @@ real-only 反证；判据全在设备事实上，证据不足判 `INCONCLUSIVE` 
   `android_capabilities · all`（见证据目录 `p2-conversation.txt`），随后仍在推理中被本轮取证打断，
   未取到完成态。故「解锁链路是否被模型自主走通」目前只有**一次未完成的观察**，
   尚不足以判定（既不能算通过，也不能算断链）。
+
+## 引擎升级到 0.1.7-rc.2 后的已知缺口（2026-09-26，deepcode 二开线）
+
+- **combo 缓存族未移植（A3/A5/C3/P1）**：上游重写了 `dsh-client-modules` 的组合模型
+  （`orderByModuleGraph` + `partitionComboRecords` + `buildBatch`），四条补丁针对的旧模型已不存在，
+  故在 0.1.7 上判「不适用」。**影响面**：丢掉「构建期 combo 预计算 + 单条惰性 + 并行 + 探针」这层
+  启动优化 ⇒ 冷启动变慢（功能不受影响）。要做，需在新模型上重做等价物，属独立工程。
+  A4（compose 惰性 + 去重）在新模型上仍可施加，已保留。
+- **8 个 @deepseek-ai 包在 0.1.7-rc.2 未发布**：`dsh-code-runtime`、`dsh-code-runtime-worker-thread`、
+  `dsh-e2b`、`dsh-experimental-agent-team-web-profile`、`dsh-fs-e2b`、`dsh-settings-file`、
+  `dsh-subprocess-e2b`、`dsh-workflow-worker-thread`。装配时经「已装配树内是否存在依赖者 + 是否被
+  补丁层点名」双向核对后**省略**（无人依赖、未被点名）；`dsh-agent-presets` 因被
+  `dsh-host-apiproxy` 的 peer 引用而回落到其最新可用版 `0.1.5-rc.3`。若上游后续需要这些包，
+  需回查其可用版本线。
+- **`patchReload` 特性被上游移除**：移动壳当初为 Android 强制 `startup` 档（避免 live reload 的
+  冷启动开销）的优化**失去对象**（见坑 182）。若上游以其它机制保留了热重载，需在新机制上重新评估
+  Android 侧的冷启动代价。
+- **F9 垫片尚未接进官方快照构建链（但已进 APK 产物）**：`node-addon-require-builtin-android-arm64` 的纯 JS
+  垫片（源码留档工作区 `tools/f9-android-shim/`）已随本轮手工装配的引擎树**烘进可安装 APK 的快照**（装上即带，
+  不再依赖设备侧换树）；但它仍是**手工步骤**——`build-snapshot`/`inject-all` 的注入面里没有它，重跑官方
+  快照链不会自动生成。要做成可复现形态，需把它作为额外包注入（可复用 overlay 的 `extraPresent` 机制，见坑 180）。
+- **新引擎快照目前是「手工建树 + 手工补两步」的产物，官方快照链在本机未跑通**：`scripts/snapshot-config/engine-overlay.json`
+  已按 0.1.7-rc.2 树重写（310 包 / vendorTop 17 / 4 个未发布保留），但 `build-snapshot-013.mjs` 第 0e 步的
+  「逐包拉 npm + 补依赖闭包」在本机（arm64 Android）尚未完整验证过。本轮的可用路径是：按 overlay 拉树 →
+  打补丁 → `tools/normalize-modes.py` 归一权限 → `--degrade` 降级 → `tools/rebuild-snapshot-engine.py` 换子树
+  → `xz -T0`（见 build-and-env §3.6）。**缺口**：这条路没有进入 CI/官方链，重出快照需人工照做。
+- **`scripts/patches/**` 的改动尚未同步协调仓**：本轮改了 `apply-patches.mjs`（`applies` 归一 + 三条重复
+  `applies` 删除）与 `registry.json`（5 条 `featureAnchor`）。该目录是**双仓逐字节镜像面**（铁律 6）——
+  本地 `check-patch-mirror.mjs` 因对端树不在场而 SKIP，但**云端自包含构建用的仍是旧副本**，合并前必须
+  按「先本仓镜像 PR、再协调仓权威源 PR」的顺序同步。
+- **门禁的「第三态」目前只覆盖两条**：`check-engine-overlay`（marker vs `featureAnchor`）与
+  `check-perf-instrumentation`（`na()`）已能表达「上游已移除该特性」。其余门禁若将来也遇到「上游整块删掉
+  被测对象」，需按同一原则各自加 N/A 出口——**不得**用「放宽判据」或「永久 SKIP」代替（见坑 184）。
+- **`dsh plugin` 子命令在共存包里不可用**：快照里的 `pnpm` shim 烧的是主包前缀
+  （`/data/user/0/com.dsharnessmobile.shell/…`），dev 包（`com.deepcode.shell`）调用必失败 ⇒
+  版本豁免只能手写 `compatibility.json`（见坑 181）；同理其它走 pnpm 的插件管理动作在共存包里都不可用。
+- **语音输入在 Android 上由「本机 whisper.cpp + 云端 MiMo」两条自研 provider 提供，上游 sensevoice 路线不可用**：
+  上游 `dsh-experimental-speech-to-text-sensevoice` 依赖 `sherpa-onnx-node` 的原生 addon，而该项目 npm 上
+  **只有 darwin/linux/win 绑定、android-arm64 从未发布** ⇒ 在 Android 上打开语音设置只会得到
+  「准备失败: Local speech is unavailable for android-arm64」。本仓新增 `plugins/dsh-whisper-local`
+  （本机离线：随包 whisper-cli + tiny 模型，实测 11 s 音频 ≈ 2 s）与 `plugins/dsh-mimo-asr`
+  （云端：复用 `llm-pi-ai` 的 `xiaomi-token-plan-cn` 路由与 key，实测 ≈ 1.1 s），默认走本机 whisper。
+  三件必要件（bundle 登记 / provider 后端 / 壳侧麦克风双门）与实测判据见坑 193-195。
+- **语音后端的二进制与模型由「工作区资产」注入，尚未进 CI/官方链**：`whisper-cli` 是本机原生编译产物
+  （链上不该为此装 500 MB 工具链），模型是 77 MB 二进制；二者经 `tools/snapshot-assets.json` +
+  `tools/add-snapshot-assets.py` 在「引擎树换好之后、压缩之前」注入快照，**与 F9 垫片同族**（本地可复现、
+  云端链不产生）。要做成可发布形态有两条路：把 whisper.cpp 构建纳入快照链（需给链装工具链），或把
+  CLI/模型作为 Release 资产随构建下载。
+- **语音识别是「整段录音 → 整段推理」，不是流式**：provider 契约本来就是「一次录音一次 transcribe」，
+  本仓两条实现都按此；长句子的实时字幕/边说边出字需要另做（上游亦无此能力）。
+- **上游 sensevoice provider 仍会出现在语音设置页（失败态）**：`- id: speech-to-text-sensevoice / disabled: true`
+  对 **bundle 插入行不生效**（成因见坑 191），故设置页可能列出三个 provider、其中 SenseVoice 显示「准备失败」。
+  默认选择是我们声明的 `whisper-local`，不影响使用。
+- **升级安装的 profile `package.json` 走「并集」合并 ⇒ 工厂已删除的 bundle 在 live 侧永久残留**：
+  `SnapshotTransaction` 对 `dsh.profile.bundles` 取并集（同名冲突保留 live）。实测：dev 包 live 的 bundles
+  里带着 `voice-input-bundle` / `experimental-agent-team-profile` / `experimental-auto-review` 三项工厂从未
+  声明的条目，升级后仍在 ⇒ 语音输入页面在**升级设备**上依旧出现，而全新安装不会（见坑 191/192）。要彻底
+  收敛，需要壳侧在合并时按工厂参考**剪除**未知 bundle（属独立改动，涉及快照事务语义，未做）。
+
+### 语音：流式听写（边说边出字）——改造清单与工作量（2026-09-27 评估，未实施）
+
+**现状**：三个 provider 都是整段识别——`speech.transcribe` 的契约本身就是一次性的（一份 canonical WAV 进、一段文本出），
+客户端 `dsh-experimental-client-ui-voice-input` 也是「MediaRecorder 收完最后一坨 → `decodeAudioData` → 一次性 RPC」
+（`dsh-experimental-client-ui-voice-input/lib/client.js:4688`）。所以 UI 上是「说完再出字」，没有部分结果。
+
+**可行性（本机已实测到位）**：官方 Termux 预编译包自带流式二进制 `sherpa-onnx-online-websocket-server`
+（`--port` / `--tokens` / `--encoder` / `--decoder` / `--joiner`，或 `--paraformer-encoder/decoder`）与
+`sherpa-onnx-vad-with-online-asr`（长音频 VAD 切句批处理）。候选流式模型（HF 镜像 API 现数，均可达）：
+
+| 候选 | 用途 | int8 合计 |
+|---|---|---|
+| `csukuangfj/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23` | 中文流式（14M 参数，**小到可随包**） | **≈24 MB**（encoder 20.6 + decoder 1.8 + joiner 1.7 + tokens） |
+| `.../streaming-zipformer-bilingual-zh-en-2023-02-20` | 中英混合流式（按需下载） | ≈189 MB |
+| `.../streaming-paraformer-bilingual-zh-en` | 备选流式 | ≈226 MB |
+
+**标点**：HF 上没有可达的 online-punctuation 仓（官方那个是 GitHub release 资产，本机 release-assets 不可达，同坑 202）。
+建议形态 = **混合**：边说边用 14M zipformer 出部分结果，松手时用**已在包的离线 SenseVoice** 跑一遍终稿
+（标点 + ITN + 更高准确率）——两段都已有可跑实现，不必等标点模型。
+
+**改造面（三块，都不动引擎核）**：
+1. 设备侧新插件：14M 模型随包（`tools/snapshot-assets.json`），spawn 常驻 `sherpa-onnx-online-websocket-server`
+   （生命周期/健康/端口；库环境按坑 206 口径只给专属库目录、不挂 termux-exec），并注册自己的 HTTP 分块路由
+   （`/api/stt-stream/{start,chunk,finish}`；新路由必须过 `check-api-route-auth`），把 PCM 分块转投 WS 解码、回部分文本。
+2. 客户端新插件：用 AudioWorklet 取 16 kHz 单声道 PCM（MediaRecorder 给的是编码流，流式必须换通路），
+   ~200 ms 一块 POST，渲染部分结果，松手时替换为终稿并插入输入框；`ui-voice-input` 行停用以避免两个语音入口。
+3. 集成与验收：三层验收（含真机延迟实测）、流式不可用时回落离线档、许可通知登记（14M 模型 Apache-2.0）、文档与执行地图。
+
+**工作量（一人，含真机实测）**：设备侧 ≈1 天、客户端 ≈1~1.5 天、集成与验收 ≈0.5~1 天，合计 **约 3 天**。
+**主要风险**：① 浏览器侧 PCM 通路与重采样；② 常驻 WS 进程的生命周期（崩溃/端口/内存）；③ 部分结果的编辑语义（替换而非追加）；
+④ 中文流式模型无标点，必须靠终稿回扫（已设计）；⑤ 切后台时音频通路中断（可接受，需明示）。
+**不建议的替代**：轮询式「整段重转写」随录音变长线性变慢且抖动大；仅为省 ~1 s 模型装载而把离线档改成常驻 WS 服务，收益不足。
+
+### 语音：SenseVoice 权重不随包 + VAD 默认关（2026-09-27 登记）
+
+- `model.int8.onnx`（239 MB）按需下载，首用需一次联网下载（下载完整性已用 `content-length` + sha256 双锁保证）。
+- VAD 档（`sherpa-onnx-vad-with-offline-asr` + silero）随包但默认 `vad: false`：短句（语音输入的主场景）直接档更快；长录音/多句场景可在 profile 行打开 `vad: true`。
+- `defaultProvider` 仍为 `whisper-tiny`（新装 APK 零下载即可用）；质量优先需在设置页切到 `sherpa-sensevoice`（首次触发下载）。
+
+### 快照里的包装脚本把主包路径烧死，共存包（dev）里不可用（2026-09-30 登记）
+
+- **现象**：dev 包（`com.deepcode.shell`）里执行 `$PREFIX/bin/tar` 报
+  `/data/user/0/com.dsharnessmobile.shell/files/usr/bin/tar.real: inaccessible or not found` —— 该脚本是壳侧
+  「GNU tar 压缩与执行拦截冲突修复」的包装器，`exec` 目标写死了**主包**的绝对路径。
+- **影响面**：所有 `run-as com.deepcode.shell` 里手工调用 `tar` 的场景（本轮换引擎时必须改调 `tar.real` 才走通）；
+  引擎内部若有 shell out 到 `tar` 的路径（插件包解包一类）同样会失败。同类包装器应一并排查
+  （`$PREFIX/bin/` 下凡是 `exec "<绝对路径>"` 的脚本都按同一规则失效）。
+- **正解**：包装器用**相对自身**的路径（`exec "$(dirname "$0")/tar.real" "$@"`）；短期规避是直接调 `tar.real`，
+  或退回系统 `/system/bin/tar`（toybox）。

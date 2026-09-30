@@ -9,7 +9,10 @@ export const ATTACHMENT_PICKER_MENU_CSS = `
   padding: 6px;
   border: 1px solid var(--dsw-alias-border-l4);
   border-radius: 12px;
-  background: var(--dsw-specific-menu);
+  /* 0.1.7 起 --dsw-specific-menu → --dsw-menu-surface-fill 是 #f8f9fa94 / #43454a73（58% / 45%），
+     真机实测本菜单因此半透明（能看见底下的输入框占位文字）。自己的面板直接取主题的不透明抬升面：
+     颜色等效、底透不上来，且不依赖 composer-menu.css 里那条 token 覆盖的作用域。 */
+  background: var(--dsw-alias-bg-layer-3, var(--dsw-specific-menu));
   box-shadow: var(--dsw-elevation-panel);
   color: var(--dsw-alias-label-primary);
   font: var(--dsw-font-markdown-base);

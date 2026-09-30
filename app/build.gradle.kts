@@ -8,7 +8,22 @@ android {
   compileSdk = 36
 
   defaultConfig {
-    applicationId = "com.dsharnessmobile.shell"
+    // deepcode 二开（共存安装）：独立 applicationId，与基线主包 com.dsharnessmobile.shell 并存。
+    // 不同包名即不同应用：各自 data 目录、各自权限授予（Shizuku / All Files Access 需按新包重授），
+    // 两包覆盖安装互不影响。默认取二开值；-PapplicationIdOverride=<id> 可覆盖回任意值。
+    // namespace 保持 com.dsharnessmobile.shell（R 类与既有代码引用不动；namespace 不等于 applicationId）。
+    applicationId = providers.gradleProperty("applicationIdOverride").getOrElse("com.deepcode.shell")
+    // deepcode 二开（共存安装）第二处硬约束：引擎监听端口必须可区分。基线把它写死在 3080
+    // （EngineProbe.ENGINE_URL / EngineAuth.AUTHORITY / ControlPoller.BASE / NotifyBridge.PORT /
+    // OverlayPanel / OverlayService / FileIncoming 等多处），于是第二个包启动时必然
+    // `listen EADDRINUSE 127.0.0.1:3080`，界面表现为「启动失败」
+    // （boot-fail.log: stage=boot-budget-exceeded，detail=引擎进程存活但 90s 内 Web 端口未就绪）。
+    // 此处提为单一真源：默认基线包 3080、二开包 3081；-PenginePort=<n> 可覆盖。
+    buildConfigField(
+      "int", "ENGINE_PORT",
+      providers.gradleProperty("enginePort")
+        .getOrElse(if (applicationId == "com.dsharnessmobile.shell") "3080" else "3081"),
+    )
     minSdk = 26
     // targetSdk 34: Android 15+ forbids exec of app-data ELF for targetSdk 35+
     // (the embedded engine, bash, and every child command would need linker64

@@ -1,0 +1,12 @@
+{
+  "@dsh-android/dsh-shell-termux@0.2.0": ["0.1.7-rc.2", "0.2.0-rc.2"],
+  "@dsh-android/dsh-client-ui-responsive@0.3.3": ["0.1.7-rc.2", "0.2.0-rc.2"],
+  "@dsh-android/dsh-android-bridge@0.2.4": ["0.1.7-rc.2", "0.2.0-rc.2"],
+  "@dsh-android/dsh-android-browser@0.1.0": ["0.1.7-rc.2", "0.2.0-rc.2"],
+  "@dsh-android/dsh-android-file-open@0.1.0": ["0.1.7-rc.2", "0.2.0-rc.2"],
+  "@dsh-android/dsh-android-linux-env@0.1.2": ["0.1.7-rc.2", "0.2.0-rc.2"],
+  "@dsh-android/dsh-android-manage@0.3.0": ["0.1.7-rc.2", "0.2.0-rc.2"],
+  "@dsh-android/dsh-android-vdisplay@0.1.0": ["0.1.7-rc.2", "0.2.0-rc.2"],
+  "@dsh-android/dsh-model-capability@0.2.1": ["0.1.7-rc.2", "0.2.0-rc.2"],
+  "dshmarketplace-plugin@0.1.5": ["0.1.7-rc.2", "0.2.0-rc.2"]
+}

@@ -501,10 +501,16 @@ const IMPLS = {
         '\t\t\tthrow new Error(`atomic-write: timed out waiting for the writer lock at ${lockPath}`);',
         '\t\t}',
       ].join('\n')
-      for (const [old, label] of [[IMPORT_OLD, 'import 行'], [HELPER_OLD, 'LOCK_RETRY 常量注释'], [LOOP_OLD, 'delay 初始化'], [DEADLINE_DECL_OLD, 'deadline 声明'], [DEADLINE_OLD, '超时 throw']]) {
+      for (const [old, label] of [[HELPER_OLD, 'LOCK_RETRY 常量注释'], [LOOP_OLD, 'delay 初始化'], [DEADLINE_DECL_OLD, 'deadline 声明'], [DEADLINE_OLD, '超时 throw']]) {
         if (!s.includes(old)) throw new Error(`atomic-stale-lock 锚点未命中（${label}）——引擎升级后请人工核对 dsh-atomic-write/lib/index.js`)
       }
-      s = s.replace(IMPORT_OLD, IMPORT_NEW)
+      // import 行：上游 0.1.7 起已自行导入 readFile（本补丁需要的正是它）——已在场则跳过该步，
+      // 不在场才补（既不改写上游已有的正确导入，也保持对 0.1.5 及更早版本的兼容）。
+      if (!s.includes(IMPORT_NEW)) {
+        if (!s.includes(IMPORT_OLD)) throw new Error('atomic-stale-lock 锚点未命中（import 行）——引擎升级后请人工核对 dsh-atomic-write/lib/index.js')
+        s = s.replace(IMPORT_OLD, IMPORT_NEW)
+      }
+      // 上游 0.1.7 起已自行导入 readFile，故 import 一步按需跳过（见上）。
       s = s.replace(HELPER_OLD, HELPER_NEW)
       s = s.replace(LOOP_OLD, LOOP_NEW)
       s = s.replace(DEADLINE_DECL_OLD, DEADLINE_DECL_NEW)
@@ -1001,6 +1007,28 @@ const IMPLS = {
         { old: PENDING_OLD, neu: PENDING_NEW },
         { old: THROW_OLD, neu: THROW_NEW },
       ]
+      // 上游 0.1.7 起把 assertEntriesActivated 重构成 auditStartupEntries + 结构化 outcome
+      //（inactiveEntries 收集 {entry, outcome:{kind:"pending"|"failed"}}）。同一不变量在新结构里
+      // 只需一处表达：把「非官方包且 pending」的条目从致命集合里剔除（诊断文案仍列全部条目）。
+      if (!s.includes(PENDING_OLD)) {
+        const NEW_DECL_OLD = '\tconst required = new Set(failures.filter(({ entry }) => entry === bootstrapIncludes.get(ctx) || requiredStartupEntryIds.has(entry.options.id)).map(({ entry }) => entry));'
+        const NEW_DECL_NEW = [
+          '\t/* dsh-mobile boot tolerance (G1): a third-party entry that waits for a service the host',
+          '\t * never provides can never activate — keep it pending and boot on (0.1.7 structured-outcome',
+          '\t * form). Official entries stay fatal so a real regression is still loud. */',
+          '\tconst fatalFailures = failures.filter(({ entry, outcome }) => !(outcome.kind === "pending" && !String(entry.options.name ?? "").startsWith("@deepseek-ai/")));',
+          NEW_DECL_OLD.replace('\tfailures.filter', '\tfatalFailures.filter'),
+        ].join('\n')
+        if (!s.includes(NEW_DECL_OLD)) {
+          throw new Error('boot-pending 锚点未命中：既非 0.1.5 的 assertEntriesActivated 形态，也非 0.1.7 的 auditStartupEntries 形态——引擎升级后请人工核对 dsh-app-boot')
+        }
+        s = s.replace(NEW_DECL_OLD, NEW_DECL_NEW)
+        if (!s.includes('dsh-mobile boot tolerance (G1)') || !s.includes('const fatalFailures = failures.filter')) {
+          throw new Error('boot-pending 复核失败（0.1.7 形态）——不写回')
+        }
+        console.log('  boot-pending-G1: 1 处锚点替换（0.1.7 结构化 outcome 形态）')
+        return s
+      }
       let changed = 0
       for (const { old, neu } of REPL) {
         if (s.includes(neu)) continue
@@ -1146,7 +1174,7 @@ const IMPLS = {
         '\tconst disabled = [];',
         '\tfor (;;) {',
         '\t\ttry {',
-        '\t\t\tawait mountRootInclude(ctx, absoluteConfigPath, [...(patches ?? []), ...disabled], bareModuleBaseUrl);',
+        '\t\t\tawait mountRootInclude(ctx, absoluteConfigPath, [...(patches ?? []), ...disabled], bareModuleBaseUrl, binName);',
         '\t\t\tif (disabled.length > 0) {',
         '\t\t\t\tconst noun = disabled.length === 1 ? "plugin" : "plugins";',
         '\t\t\t\tconsole.warn(`${binName}: ${String(disabled.length)} third-party ${noun} failed to load during boot and will be skipped; the engine continues. Broken: ${disabled.map((entry) => entry.name).join(", ")} (dsh-mobile third-party boot isolation (G3)). Update or remove the plugin to clear this warning.`);',
@@ -1175,15 +1203,21 @@ const IMPLS = {
       ].join('\n')
       if (!s.includes(BOOT_FN_ANCHOR)) throw new Error('boot-third-party-isolation 锚点未命中：boot() 函数头（引擎升级后请人工核对 dsh-app-boot）')
       s = s.replace(BOOT_FN_ANCHOR, HELPERS)
-      // ② boot() 调用点改为隔离式挂载
-      const CALL_OLD = '\t\tawait mountRootInclude(ctx, absoluteConfigPath, patches, bareModuleBaseUrl);'
+      // ② boot() 调用点改为隔离式挂载。锚点随上游参数表漂移：
+      //    0.1.5: mountRootInclude(ctx, path, patches, bareModuleBaseUrl)
+      //    0.1.7: mountRootInclude(ctx, path, patches, bareModuleBaseUrl, binName)（多带诊断前缀）
+      const CALL_OLDS = [
+        '\t\tawait mountRootInclude(ctx, absoluteConfigPath, patches, bareModuleBaseUrl);',
+        '\t\tawait mountRootInclude(ctx, absoluteConfigPath, patches, bareModuleBaseUrl, binName);',
+      ]
+      const CALL_OLD = CALL_OLDS.find((c) => s.includes(c))
       const CALL_NEW = '\t\tawait dshMobileMountRootIncludeTolerant(ctx, binName, absoluteConfigPath, patches, bareModuleBaseUrl); /* dsh-mobile third-party boot isolation (G3) */'
-      if (!s.includes(CALL_OLD)) throw new Error('boot-third-party-isolation 锚点未命中：boot() 内 mountRootInclude 调用点')
+      if (!CALL_OLD) throw new Error('boot-third-party-isolation 锚点未命中：boot() 内 mountRootInclude 调用点')
       s = s.replace(CALL_OLD, CALL_NEW)
       if (!s.includes('dsh-mobile third-party boot isolation (G3)')
         || !s.includes('dshMobileMountRootIncludeTolerant')
         || !s.includes('__dshMobileBootSkippedPlugins')
-        || s.includes('\t\tawait mountRootInclude(ctx, absoluteConfigPath, patches, bareModuleBaseUrl);')) {
+        || CALL_OLDS.some((c) => s.includes(c))) {
         throw new Error('boot-third-party-isolation 复核失败——不写回')
       }
       return s
@@ -1326,6 +1360,9 @@ const IMPLS = {
   'perf-patch-reload-N1': {
     file: 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js',
     scope: 'engine',
+    // 上游 0.1.7 起移除 `patchReload`（PROFILE_TEMPLATES 与归一化逻辑一并消失）⇒ 本补丁失去对象。
+    // 保留实现以兼容 0.1.5 及更早引擎；适用性锚点 patchReload 登记在 registry.json 的 featureAnchor
+    // （apply-patches 归一为 applies），目标树无该词时整条判「不适用」而非失败。
     check: (s) => (s.match(/dsh-mobile patchReload normalization \(N1\)/g) || []).length === 2,
     apply: (s) => {
       if ((s.match(/dsh-mobile patchReload normalization \(N1\)/g) || []).length === 2) return s
@@ -1430,9 +1467,17 @@ const IMPLS = {
       const INJECT_NEW = '\t\t\ttable.push(...bootInjections(this.ensureComposed()));'
       if (!s.includes(INJECT_OLD)) throw new Error('combo-lazy 锚点未命中：index-inject 行')
       s = s.replace(INJECT_OLD, INJECT_NEW)
-      const RESOURCE_OLD = '\tbundleResource(method, url) {\n\t\tif (method !== "GET" && method !== "HEAD") return { status: 405 };'
-      const RESOURCE_NEW = '\tbundleResource(method, url) {\n\t\tthis.ensureComposed();\n\t\tif (method !== "GET" && method !== "HEAD") return { status: 405 };'
-      if (!s.includes(RESOURCE_OLD)) throw new Error('combo-lazy 锚点未命中：bundleResource')
+      // 上游 0.1.7 起 bundleResource 变成 async 方法（锚点前的 `async ` 前缀）——两种形态都认。
+      const RESOURCE_OLDS = [
+        '\tbundleResource(method, url) {\n\t\tif (method !== "GET" && method !== "HEAD") return { status: 405 };',
+        '\tasync bundleResource(method, url) {\n\t\tif (method !== "GET" && method !== "HEAD") return { status: 405 };',
+      ]
+      const RESOURCE_OLD = RESOURCE_OLDS.find((c) => s.includes(c))
+      if (!RESOURCE_OLD) throw new Error('combo-lazy 锚点未命中：bundleResource')
+      const RESOURCE_NEW = RESOURCE_OLD.replace(
+        'bundleResource(method, url) {',
+        'bundleResource(method, url) {\n\t\tthis.ensureComposed();',
+      )
       s = s.replace(RESOURCE_OLD, RESOURCE_NEW)
       const REBUILT_OLD = '\t\tthis.composed = this.compose();\n\t\tfor (const notify of this.rebuildListeners) try {'
       const REBUILT_NEW = '\t\tthis.composed = this.compose();\n\t\tthis.composeDirty = false;\n\t\tfor (const notify of this.rebuildListeners) try {'
@@ -1456,6 +1501,10 @@ const IMPLS = {
   'combo-cache-A3': {
     file: 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-modules/lib/index.js',
     scope: 'engine',
+    // 上游 0.1.7 重写 client-modules 组合模型（orderByModuleGraph + partitionComboRecords + buildBatch），
+    // 本补丁针对旧模型（compose() 逐条 buildCombo 循环 + 构建期 combo 缓存键）⇒ 明确不适用。
+    // 移植等价物需要在新模型上重做「启动期 combo 预计算 + 命中查询」，属独立工程（见 known-gaps）。
+    // 适用性锚点（sha1 JSDoc）登记在 registry.json 的 featureAnchor，apply-patches 归一为 applies。
     check: (s) => s.includes('dsh-mobile combo cache (A3)')
       && s.includes('dsh-mobile combo cache hit (A3)')
       && s.includes('dsh-mobile combo cache report (A3)'),
@@ -1622,6 +1671,9 @@ const IMPLS = {
   'combo-single-lazy-A5': {
     file: 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-modules/lib/index.js',
     scope: 'engine',
+    // 同 A3：旧模型 compose() 里「无条件为每条记录建单条」的那行已不存在（新版多带 readSourceMap 参数，
+    // 且单条响应改由 responses/previousBatchResponses 兜底）⇒ 明确不适用。
+    // 适用性锚点（compose 内无条件建单条那行）登记在 registry.json 的 featureAnchor。
     check: (s) => s.includes('dsh-mobile combo single lazy (A5)')
       && s.includes('dshMobileSingleComboResponse')
       // 关键反 no-op：compose() 里「无条件为每条记录建单条」的调用必须已消失。
@@ -2147,7 +2199,10 @@ const IMPLS = {
     check: (s) => s.includes('dsh-mobile compile cache flush (N2)') && s.includes('dshMobileFlushCompileCacheQuietly'),
     apply: (s) => {
       if (s.includes('dsh-mobile compile cache flush (N2)') && s.includes('dshMobileFlushCompileCacheQuietly')) return s
-      const IMPORT_OLD = 'import { readFileSync } from "node:fs";'
+      // 锚点随上游头部 import 漂移（0.1.5: node:fs/readFileSync；0.1.7: node:util/inspect）——
+      // 取首个在场者，既兼容旧引擎也兼容新引擎。
+      const ANCHORS = ['import { readFileSync } from "node:fs";', 'import { inspect } from "node:util";']
+      const IMPORT_OLD = ANCHORS.find((a) => s.includes(a))
       const BLOCK = [
         'import { flushCompileCache as dshMobileFlushCompileCache } from "node:module";',
         '/* dsh-mobile compile cache flush (N2): Node persists NODE_COMPILE_CACHE entries only when the',
@@ -2174,6 +2229,15 @@ const IMPLS = {
       return s
     },
   },
+}
+
+// ── applies 归一（0.1.7 起）：适用性锚点的唯一真源是 registry.json 的 featureAnchor ──
+// 同一锚点原先要在登记表（门禁 check-engine-overlay 用）和实现（补丁框架用）各抄一份，两处漂移
+// 就是静默误判（一边判不适用、一边判失败）。实现自带 applies 时以实现为准（复杂/多锚点情形留口）。
+for (const [id, impl] of Object.entries(IMPLS)) {
+  if (typeof impl.applies === 'function') continue
+  const anchor = registry.patches.find((p) => p.id === id)?.featureAnchor
+  if (typeof anchor === 'string' && anchor.length > 0) impl.applies = (s) => s.includes(anchor)
 }
 
 // ── 登记表 ↔ 实现 交叉校验（漂移即拒）──
@@ -2218,6 +2282,9 @@ let applied = 0
 let failed = 0
 const touched = new Set()
 
+/** 前提补丁本身「不适用」时的哨兵：依赖它的补丁同样不适用（上游重写整族时传导，而不是误报失败）。 */
+const NOT_APPLICABLE_DEP = Symbol('not-applicable-dep')
+
 /** 前提补丁（registry.requires）：前提未打时依赖补丁的锚点不可能命中——提前给出精确诊断。 */
 const requirementFailure = (meta) => {
   for (const dep of meta?.requires ?? []) {
@@ -2229,7 +2296,10 @@ const requirementFailure = (meta) => {
     } catch {
       return `前提补丁 ${dep} 的目标文件缺失（${dimpl.file}）`
     }
-    if (!dimpl.check(dsrc)) return `前提补丁 ${dep} 未打（marker 不在场）——先施加 ${dep}，否则本补丁只会在原地空转`
+    if (!dimpl.check(dsrc)) {
+      if (typeof dimpl.applies === 'function' && !dimpl.applies(dsrc)) return NOT_APPLICABLE_DEP
+      return `前提补丁 ${dep} 未打（marker 不在场）——先施加 ${dep}，否则本补丁只会在原地空转`
+    }
   }
   return null
 }
@@ -2245,14 +2315,24 @@ for (const id of order) {
     failed++
     continue
   }
+  if (impl.check(src)) {
+    console.log(`[skip] ${id} 已应用（${impl.file}）`)
+    continue
+  }
+  // 适用性先于前提：目标特性整体不在场（上游删除/重写）时，本补丁与「以它为前置」的补丁都不适用，
+  // 计为 skip 而非 fail——否则引擎升级会把「上游重写」误报成锚点漂移。
+  if (typeof impl.applies === 'function' && !impl.applies(src)) {
+    console.log(`[skip] ${id} 不适用（上游已无该特性；${impl.file}）`)
+    continue
+  }
   const missingDep = requirementFailure(meta)
+  if (missingDep === NOT_APPLICABLE_DEP) {
+    console.log(`[skip] ${id} 不适用（前提补丁据其 applies 判定不适用；${impl.file}）`)
+    continue
+  }
   if (missingDep) {
     console.error(`[fail] ${id}: ${missingDep}`)
     failed++
-    continue
-  }
-  if (impl.check(src)) {
-    console.log(`[skip] ${id} 已应用（${impl.file}）`)
     continue
   }
   if (mode === 'check') {

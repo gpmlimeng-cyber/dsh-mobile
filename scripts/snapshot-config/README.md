@@ -10,6 +10,8 @@
 | `slim.json` | 7e-2/8a/8a2 | nodePtyPrebuilds / reflinkGlobs / misplacedDirs / sourcemapDelete |
 | `apt.conf.template` | 7d 包管理器路径覆盖 | APT_CONFIG 主文件；`@@PREFIX@@` 构建期替换设备端前缀 |
 | `install-clang.sh` | 0.13.1 W6 工具链 | C 工具链按需安装器（随快照分发）；`@@PREFIX@@` 同上 |
+| `profile-compatibility.json` | `inject-all.py` 注入段 | profile 级插件版本豁免（写出 `home/.dsh/profiles/<prof>/compatibility.json`）。0.1.7 起必需：上游精确版本兼容闸门会停用 peerDependencies 精确 pin 旧版的移动插件（boot 成功但无 bash/无移动 UI），而共存包里 `dsh plugin allow-version` 不可用 ⇒ 豁免必须随包发货。格式 `{"<pkg@版本>": ["<dsh 版本>", ...]}`，条目非法即构建期硬失败（见坑 181） |
+| `engine-overlay.json` | `build-snapshot-013.mjs` 第 0e 步 | 引擎逐包版本登记表（packages/vendorTop/nested/pins/keepUnpublished）——换引擎版本线时按实际树重写 |
 
 ## 约定
 

@@ -36,6 +36,7 @@ import { COMPOSER_ROW_CSS } from './composer-row.css.ts'
 import { COMPOSER_INSETS_CSS } from './composer-insets.css.ts'
 import { TRAJECTORY_DETAILS_CSS } from './trajectory-details.css.ts'
 import { TrajectoryPanelsObserver } from './trajectory-panels-observer.ts'
+import { ComposerCommandButtonEnhancer } from './composer-command-button.ts'
 import { ComposerPopupGuard } from './composer-popup-guard.ts'
 import { SESSION_LOG_DIALOG_HIDE_CSS } from './session-log-dialog.css.ts'
 import { SessionLogDialogObserver } from './session-log-dialog-observer.ts'
@@ -176,6 +177,17 @@ export function apply(ctx: ClientContext): void {
     picker.attach()
     return () => { picker.detach() }
   }, 'ui-responsive: paperclip attachment/image source menu')
+
+  // Composer command button ("+") keyboard guard: upstream focuses the draft editor from
+  // `+`'s mousedown (`keepFocus`) and — from 0.1.7 on — again from its click
+  // (`onToggleCommandMenu` → `focusDraftEditor`), which is desktop semantics ("keep typing to
+  // filter the menu") and raises the Android soft keyboard on a phone. The guard undoes that
+  // focus synchronously while the editor did not already own it (see the class comment).
+  ctx.effect(() => {
+    const commandButton = new ComposerCommandButtonEnhancer()
+    commandButton.attach()
+    return () => { commandButton.detach() }
+  }, 'ui-responsive: composer command button keyboard guard')
 
   // Trajectory local details panel (issue apk#67): on narrow screens the
   // upstream panel is confined between the timeline bar and the composer seat.

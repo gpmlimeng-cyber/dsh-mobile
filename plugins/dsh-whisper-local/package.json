@@ -1,0 +1,10 @@
+{
+  "name": "dsh-whisper-local",
+  "version": "0.1.0",
+  "private": true,
+  "description": "whisper.cpp (host-local) speech-to-text provider for DSH voice input on Android",
+  "type": "module",
+  "main": "index.js",
+  "exports": { ".": "./index.js", "./package.json": "./package.json" },
+  "license": "MIT"
+}

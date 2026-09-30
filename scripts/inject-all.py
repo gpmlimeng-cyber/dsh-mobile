@@ -5,6 +5,8 @@
   ① @dsh-android 命名空间注入（原 inject-snapshot.py：profiles/{web,headless}/node_modules/@dsh-android/<pkg>/）
   ② 根级插件注入（原 inject-external-plugins.py：undo/market 等非 scoped 包，lib/skills/清单文件）
   ③ cordis.patch.yml 权威装配覆盖（原 update-snapshot-patch.py：仅 web profile，--all-profiles 展开）
+  ④ profile 级插件版本豁免写出（scripts/snapshot-config/profile-compatibility.json → 每个装配 profile 的
+     compatibility.json；0.1.7 起必需，见 COMPAT_SRC 注释与坑 181）
 压缩从 ×4 → ×1、解压从 ×4 → ×1；发布档 preset 由 DSH_INJECT_PRESET 控制（默认 9 保发布保真，
 -Fast dev 循环传 1 —— 743MB tar 上 preset9≈380s / preset1≈75s / 多线程 xz -6≈48s 实测，2026-09-05）。
 并发上限（0.14.1 系统级约束）：构建期压缩/解压不得吃满全部逻辑核（原写法是 `-T0`），否则开发机被
@@ -35,6 +37,23 @@ PROFILES = ("web", "headless")
 NEGATIVE_CONTROL_PROFILES = ("headless-bad",)
 DSH_ANDROID_NS = "node_modules/@dsh-android/"
 EXT_INCLUDE_FILES = ("package.json", "cordis.patch.yml", "spec.json", "README.md", "README.zh-CN.md", "LICENSE")
+
+# profile 级「插件版本豁免」随包发货（0.1.7 起必需，见 docs/AGENTS/gotchas.md 181）。
+# 上游 0.1.7 新增精确版本兼容闸门：移动插件的 peerDependencies 是**精确 pin**
+# （如 @deepseek-ai/dsh-bash-local: 0.1.5-rc.1），新引擎下被判定不兼容并**停用该行**——而 boot 照样
+# 成功，只是没有 bash、没有移动 UI 层（最难发现的残缺）。正路出口 `dsh plugin allow-version` 写的就是
+# profile 内的 compatibility.json；但快照里的 pnpm shim 烧的是**主包**前缀，共存包里 `dsh plugin`
+# 不可用 ⇒ 该豁免必须随包发货，不能靠设备侧手写（否则重装 APK 重解压快照后豁免消失、能力静默残缺）。
+# 源文件缺席时行为与历史完全一致（不注入）。
+COMPAT_NAME = "compatibility.json"
+# 必须登记进每个装配 profile 的 `dsh.profile.bundles` 的条目（见 scripts/snapshot-config/profile-bundles.json）。
+# 为什么需要：出厂基座 profile 只登记 [dsh-base, dsh-web-app]，而上游 experimental bundle 不会被传递依赖
+# 进来（实测：dsh-web-app 的 127 个依赖里没有 voice-input bundle）；语音输入所需的 `speech-to-text`
+# 注册表与 controller 都由 voice-input bundle 插入，不登记则整条链缺失（provider 永久 pending）。
+BUNDLES_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "snapshot-config", "profile-bundles.json")
+COMPAT_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "snapshot-config", "profile-compatibility.json")
 
 
 def parse_args(argv):
@@ -179,6 +198,30 @@ def main():
     combo_delta = build_combo_cache_delta(combo_cache_delta)
     dsh_names = set(dsh_repl.keys())
     ext_names = set(ext_repl.keys())
+    # profile 级插件版本豁免（见 COMPAT_SRC 注释）：必须能解析成 {字符串: [字符串]}，否则拒绝注入
+    # （坏 JSON 会让引擎的兼容读取静默失效 → 能力残缺而无人知，宁可构建期硬失败）。
+    compat_bytes = None
+    if os.path.exists(COMPAT_SRC):
+        with open(COMPAT_SRC, "rb") as f:
+            compat_bytes = f.read()
+        parsed = _json.loads(compat_bytes.decode("utf-8"))
+        if not isinstance(parsed, dict) or not parsed:
+            print(f"inject-all: {COMPAT_SRC} 不是非空 JSON 对象——拒绝注入兼容豁免")
+            sys.exit(2)
+        for key, value in parsed.items():
+            if not isinstance(key, str) or not isinstance(value, list) or not value \
+                    or not all(isinstance(v, str) for v in value):
+                print(f"inject-all: {COMPAT_SRC} 条目格式非法（{key!r}）——应为 "
+                      f'{{"<pkg@版本>": ["<dsh 版本>", ...]}}')
+                sys.exit(2)
+    # profile bundles 补登记（幂等）：缺失的追加，已存在的不动、不重排。
+    required_bundles = []
+    if os.path.exists(BUNDLES_SRC):
+        with open(BUNDLES_SRC, encoding="utf-8") as f:
+            spec = _json.load(f)
+        required_bundles = [b for b in (spec.get("bundles") or []) if isinstance(b, str) and b]
+        if not required_bundles:
+            print(f"inject-all: {BUNDLES_SRC} 没有有效 bundles —— 跳过 profile bundles 补登记")
     # ST-05：权威 patch 与注入包的覆盖面 = 全部真实装配 profile（默认行为，不再只写 web）。
     target_profiles = list(PROFILES)
     print(f"inject-all: preset={preset} | assembly profiles: {target_profiles} "
@@ -270,6 +313,30 @@ def main():
                         push(data, name, int(member.mtime))
                         replaced += 1
                         continue
+                if required_bundles and name.startswith("home/.dsh/profiles/") \
+                        and name.endswith("/package.json") and "/node_modules/" not in name \
+                        and name.split("/")[3] in target_profiles:
+                    handle = tin.extractfile(member)
+                    raw_manifest = handle.read() if handle is not None else b""
+                    try:
+                        manifest = _json.loads(raw_manifest.decode("utf-8"))
+                        profile = manifest.setdefault("dsh", {}).setdefault("profile", {})
+                        bundles = profile.get("bundles")
+                        if not isinstance(bundles, list):
+                            bundles = profile["bundles"] = []
+                        added = [b for b in required_bundles if b not in bundles]
+                        if added:
+                            bundles.extend(added)
+                            payload = (_json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+                            push(payload, name, int(member.mtime))
+                            replaced += 1
+                            print(f"  bundles += {', '.join(added)}（{name}）")
+                        else:
+                            push(raw_manifest, name, int(member.mtime))
+                    except Exception as error:
+                        print(f"  警告：{name} 解析失败，原样保留（{error}）")
+                        push(raw_manifest, name, int(member.mtime))
+                    continue
                 if name.startswith("home/.dsh/profiles/") and name.endswith("/cordis.patch.yml") \
                         and "/node_modules/" not in name:
                     prof = name.split("/")[3]
@@ -279,6 +346,14 @@ def main():
                         print("  patch replaced:", name)
                         continue
                     print("  skip (not an assembly profile):", name)
+                # 基座里已有的 compatibility.json 不透传：统一在追加段按仓库权威源写出，
+                # 否则 tar 内会出现同名两张条目（解压取最后一张，属于不可审计的隐式覆盖）。
+                if compat_bytes is not None and name.startswith("home/.dsh/profiles/") \
+                        and name.endswith("/" + COMPAT_NAME) and "/node_modules/" not in name \
+                        and name.split("/")[3] in target_profiles:
+                    replaced += 1
+                    print("  compat replaced:", name)
+                    continue
                 if data is None:
                     # 流式复制 + 只读前 4 字节判定权限（勿整文件读进内存：51k 文件 / 743MB 白花几分钟）
                     handle = tin.extractfile(member)
@@ -356,6 +431,15 @@ def main():
                     push(data, base + "/" + rel, now)
                     added_files += 1
                 print(f"  [add] {prof}: {pkg} ({len(ext_repl[pkg])} files)")
+
+        # profile 级插件版本豁免（见 COMPAT_SRC 注释）：与权威 patch 同覆盖面、同负控口径，
+        # 固定 mtime 保可复现构建。
+        if compat_bytes is not None:
+            for prof in target_profiles:
+                path = f"home/.dsh/profiles/{prof}/{COMPAT_NAME}"
+                push(compat_bytes, path, now)
+                added_files += 1
+                print("  [compat] injected:", path)
 
         # combo 缓存注入段（A3）：注入的 client.js 由构建链预计算为 client-combos.inject.json +
         # <sha256>.map，这里作为新 tar 条目合入出厂 web profile 缓存目录（运行时按 sha256 查表，

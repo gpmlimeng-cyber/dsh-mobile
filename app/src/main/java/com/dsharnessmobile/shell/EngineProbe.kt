@@ -23,10 +23,12 @@ import org.json.JSONObject
  */
 object EngineProbe {
 
-  const val ENGINE_URL = "http://127.0.0.1:3080"
+  // deepcode 二开：端口取自 BuildConfig.ENGINE_PORT（共存安装时两包端口必须不同，见 build.gradle.kts）。
+  // 由 const 降为 val：值来自构建配置，编译期不可知。
+  val ENGINE_URL = "http://127.0.0.1:${BuildConfig.ENGINE_PORT}"
 
   private const val ENGINE_HOST = "127.0.0.1"
-  private const val ENGINE_PORT = 3080
+  private val ENGINE_PORT = BuildConfig.ENGINE_PORT
 
   /**
    * One-shot reachability probe. Safe on any thread (never the main thread).

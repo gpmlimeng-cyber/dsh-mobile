@@ -149,3 +149,42 @@
 - insert:
     - id: android-vdisplay
       name: '@dsh-android/dsh-android-vdisplay'
+
+# deepcode 二开（2026-09-27）：Android 语音输入 = 三个 provider，设置页可切换。
+#
+# 背景（实测）：上游唯一的本地 provider `speech-to-text-sensevoice` 依赖 `sherpa-onnx-node` 的原生
+# addon，而该项目**从未发布 android-arm64 绑定**（npm optionalDependencies 只有 darwin/linux/win），
+# 打开设置页只会得到「准备失败: Local speech is unavailable for android-arm64」。本仓改走三条可用路线：
+#   · whisper-local  —— 本机 whisper.cpp（随包分发 CLI + 按需/随包模型），离线、免费、tiny 随包即用；
+#   · sherpa-local   —— 本机 sherpa-onnx **官方 Android aarch64 Termux 预编译 CLI** 跑 SenseVoice
+#                       （离线、免费、中英日韩粤 + ITN 标点，中文质量明显优于 whisper-tiny；
+#                        239 MB 权重按需下载，随包只有 tokens 与 silero VAD）；
+#   · mimo-asr       —— 小米 MiMo-V2.5-ASR 云端（走 llm-pi-ai 的 xiaomi-token-plan-cn 路由，同一条 key）。
+# 三者都注册进 `speechToText` 注册表；`defaultProvider` 指向随包的 whisper-tiny（新装即可用、零下载）。
+# 质量优先者：设置页「识别服务」切到 sherpa-sensevoice，首次选中会走 preparation 下载（带进度）。
+# 注意：**voice-input bundle 必须在 profile 的 dsh.profile.bundles 里**——注册表 `speech-to-text`
+# 与对外 controller 都由该 bundle 插入；移除 bundle 会连带把注册表一起去掉，provider 只会一直
+# pending（waiting for service: speechToText）。见 docs/AGENTS/gotchas.md 191。
+- insert:
+    - id: whisper-local
+      name: dsh-whisper-local
+      # 不写 threads：插件按机器并行度自适应（本机 10 核实测 4 线程 17.7 s / 8 线程 10.4 s）。
+      # 写死 threads 会覆盖自适应——本轮就这么把 8 线程又按回 4 线程过（真机实测）。
+      config: {}
+    - id: sherpa-local
+      name: dsh-sherpa-local
+      # 同样不写 threads（自适应）；vad 保持默认 false（整段识别，短句更快），需要切句时再开。
+      config: {}
+    - id: mimo-asr
+      name: dsh-mimo-asr
+      config:
+        apiKeyEnv: XIAOMI_TOKEN_PLAN_CN_API_KEY
+# 上游那个 Android 上不可能可用的本地 provider：停用（否则设置页会多出一个「准备失败」的选项）。
+- id: speech-to-text-sensevoice
+  disabled: true
+# 默认走本机 whisper（离线）。要用云端识别，在「设置 → 语音输入」里切换即可（选择会写回 profile）。
+# 默认走随包的 tiny（离线立即可用）；设置页「识别服务」里可直接切 base / small-q5 / small，
+# 后三档首次选中会走 preparation 下载（带进度），无需改配置。
+- id: speech-to-text
+  config:
+    defaultProvider: whisper-tiny

@@ -29,6 +29,16 @@ function mountComposer(): void {
   document.body.append(card)
 }
 
+/**
+ * Tap the composer surface (the editor / card body) — the gesture that means "I want to type".
+ *
+ * Editor focus only counts as user-initiated within a window of such a gesture, mirroring a phone:
+ * a focus nobody asked for is upstream's mount-time autofocus and is undone.
+ */
+function tapComposerSurface(): void {
+  editor.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+}
+
 /** Tap the `+` the way a phone does: pointerdown, then the mouse/click pair. */
 function tapCommandButton(): void {
   plus.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
@@ -96,6 +106,7 @@ describe('ComposerCommandButtonEnhancer', () => {
   it('leaves an already focused editor alone (the user is typing to filter)', () => {
     plus.addEventListener('mousedown', () => { editor.focus() })
     plus.addEventListener('click', () => { editor.focus() })
+    tapComposerSurface()
     editor.focus()
 
     tapCommandButton()
@@ -103,15 +114,18 @@ describe('ComposerCommandButtonEnhancer', () => {
     expect(document.activeElement).toBe(editor)
   })
 
-  it('does not suppress a gesture outside the composer card', () => {
+  it('does not count a gesture outside the composer card as "I want to type"', () => {
     const outside = document.createElement('button')
-    outside.addEventListener('click', () => { editor.focus() })
+    const focusEditor = vi.fn(() => { editor.focus() })
+    outside.addEventListener('click', focusEditor)
     document.body.append(outside)
 
     outside.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     outside.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 
-    expect(document.activeElement).toBe(editor)
+    // 卡片外的手势不会开启「用户要输入」窗口，因此这样的聚焦仍被当作程序化聚焦撤销。
+    expect(focusEditor).toHaveBeenCalledTimes(1)
+    expect(editor).not.toBe(document.activeElement)
   })
 
   it('releases on the next non-toolbar gesture (attachment menu claims the click first)', () => {
@@ -188,6 +202,70 @@ describe('settling window discipline', () => {
   })
 
   it('lets the editor keep focus once the attachment menu is closed', () => {
+    tapComposerSurface()
+    editor.focus()
+
+    expect(document.activeElement).toBe(editor)
+  })
+})
+
+describe('mousedown interception (prevent the focus, do not undo it)', () => {
+  it('keeps upstream keepFocus from running when the composer is not focused', () => {
+    // 真机轨迹：聚焦每次都被同步撤销，键盘照样弹——Chromium 的「显示软输入」是异步派发的，
+    // focus→同任务 blur 取消不掉已排队的请求。所以必须让聚焦根本不发生。
+    const upstreamKeepFocus = vi.fn()
+    const openMenu = vi.fn()
+    plus.addEventListener('mousedown', upstreamKeepFocus)
+    plus.addEventListener('click', openMenu)
+
+    tapCommandButton()
+
+    expect(upstreamKeepFocus).not.toHaveBeenCalled()
+    expect(openMenu).toHaveBeenCalledTimes(1)
+    expect(editor).not.toBe(document.activeElement)
+  })
+
+  it('leaves the mousedown alone while the user is typing', () => {
+    const upstreamKeepFocus = vi.fn()
+    plus.addEventListener('mousedown', upstreamKeepFocus)
+    tapComposerSurface()
+    editor.focus()
+
+    plus.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    plus.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+
+    expect(upstreamKeepFocus).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not intercept a mousedown outside the composer card', () => {
+    const outside = document.createElement('button')
+    const listener = vi.fn()
+    outside.addEventListener('mousedown', listener)
+    document.body.append(outside)
+
+    outside.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('programmatic autofocus (the real first-tap keyboard)', () => {
+  it('undoes an editor focus that no composer gesture asked for', () => {
+    // 真机轨迹：上游在页面加载时 focusDraftEditor；Android 要等用户手势才把 IME 请求放出去，
+    // 于是键盘在「第一次点任何东西」时弹出。非用户手势的聚焦必须当场撤掉。
+    vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+
+    editor.focus()
+
+    expect(editor).not.toBe(document.activeElement)
+  })
+
+  it('keeps an editor focus the user asked for by tapping the composer', () => {
+    const now = vi.spyOn(Date, 'now')
+    now.mockReturnValue(2_000_000)
+    tapComposerSurface()
+    now.mockReturnValue(2_000_100)
+
     editor.focus()
 
     expect(document.activeElement).toBe(editor)

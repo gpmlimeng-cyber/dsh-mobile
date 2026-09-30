@@ -157,6 +157,13 @@ node scripts/build-apk.mjs --abi arm64 --suffix <sfx>    # 门禁 → 注入 →
    或重装 APK 整体回到快照版本。验证判据：`netstat -lnt` 有该包端口 + `boot-diag.log` 出 `page-ready`
    + `boot-fail.log` mtime 不再前进 + `grep -c "disabling profile plugin row" engine.log` = 0。
 
+7. **本机没有 adb 时的换树变体（2026-09-30 打通）**：`tools/deploy-engine-to-dev.sh` 内部走 `adb shell run-as`，
+   而本机 uid 2000 与 app uid 都起不了 adb server ⇒ 改用工作区脚本 `tools/deploy-engine-inapp.sh`：
+   主包工作区 `python3 -m http.server 8899 --bind 127.0.0.1` 喂 tar.xz（dev 包读不了 /sdcard，但能连回环），
+   dev 包内 `curl` → `xz -d` → 留档 `dsh.old-<旧版本>` → `$PREFIX/bin/tar.real -xf`。
+   注意 app 上下文三条环境（`LD_LIBRARY_PATH`/`LD_PRELOAD`/`node` 另需 `OPENSSL_CONF`）与 `$PREFIX/bin/tar` 是包装脚本
+   （`tar.real` 烧的是主包路径）——细节见坑 210。
+
 > 在 `run-as` 里手工跑引擎 CLI（诊断用）必须带全套环境，否则是**假错误**：`LD_LIBRARY_PATH=<prefix>/lib`、
 > `LD_PRELOAD=<prefix>/lib/libtermux-exec-ld-preload.so`、`PATH=<prefix>/bin:/system/bin`、`DSH_HOME=<该包 home>/.dsh`、
 > `OPENSSL_CONF=<prefix>/etc/tls/openssl.cnf`（缺最后一条报 `OpenSSL configuration error`，缺前两条报 `libz.so.1 not found`）。

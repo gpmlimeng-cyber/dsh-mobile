@@ -315,6 +315,21 @@ try {
     log('--skip-inject：直接用输入快照（dev 档；权限归一化只在注入链发生，禁止用于发布资产）')
   }
 
+  // ---- 3.5 快照前缀归一（打包前最后防线；两条链共用）----
+  // 设备侧链（tools/build-dev-apk.sh → 本脚本；以及 tools/resume-build-apk.sh）直接拿**现成快照**
+  // 当基座，而快照装配（scripts/make-snapshot.sh）只重写 home/.dsh/profiles/*/cordis.patch.yml、
+  // **不碰 usr 树** ⇒「基座 = 主包前缀 + applicationId = 二开包」时静默产出跨 App 错配的包。
+  // 实测：9/30 发布到 Release v0.14.1-020rc2 的 dsh-mobile-apk-v0.14.1-ci-arm64.apk
+  // （applicationId = com.deepcode.shell）里，快照仍有 2324 处 com.dsharnessmobile.shell
+  // —— 那些路径在目标 App 的挂载命名空间里恒为 ENOENT。
+  // CI 链在 build-snapshot-013.mjs 阶段已 rebrand，这里是兜底，对两条链同时生效；
+  // 已是目标前缀时脚本内部 no-op（只做一次字节拷贝），不给正常构建加负担。
+  {
+    const norm = join(dirname(snapIn), `snap-prefix-${APP_ID}.tar.xz`)
+    run('python', [join(ROOT, 'scripts', 'normalize-snapshot-prefix.py'), snapIn, norm, APP_ID])
+    snapIn = norm
+  }
+
   // ---- 4. 门禁（注入后；与 build-apk-013.ps1 同一份门禁集）----
   log('门禁：patch 挂载集校验（双向差集）…')
   // 传**全部** externals（不只 undo/market）：新增的 external 插件同样被权威 patch 挂载，

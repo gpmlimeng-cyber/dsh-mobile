@@ -118,6 +118,10 @@ const GATE_SCRIPTS = [
   'check-build-parallel-cap.mjs',
   // Kotlin 单测数量反回归（0.14.1 P0）：CI 不跑 Kotlin 单测 + 只按退出码判 = 防线删失仍绿。
   'check-kotlin-test-count.mjs',
+  // 快照包名前缀一致性（本次修复）：快照前缀必须等于本次构建的 applicationId —— 挡住
+  // 「APK 是 A 包、快照指向 B 包」的跨 App 错配。与本地链同一份实现，差集必须为 0
+  // （只加一侧即被 check-release-gates 判红——实测踩到，本地链 35 / 云端链 34）。
+  'check-snapshot-prefix.mjs',
 ]
 
 // ---- 参数解析 ----

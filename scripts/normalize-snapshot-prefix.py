@@ -67,8 +67,25 @@ def main() -> int:
     with tarfile.open(fileobj=inbuf, mode='r:') as tin, \
             tarfile.open(fileobj=outbuf, mode='w', format=tarfile.PAX_FORMAT) as tout:
         for m in tin:
+            if m.issym():
+                # 符号链接的 target 也必须归一：内核解析 symlink 用的是**绝对目标**，不经过
+                # termux-exec 的 open/execve 拦截 —— 指向旧前缀的链接在目标 App 里直接断
+                # （实测占残留绝大多数：归一后 855 处里 ~828 处是 symlink target）。
+                newlink = (m.linkname
+                           .replace(f'/data/user/0/{old}', f'/data/user/0/{target}')
+                           .replace(f'/data/data/{old}', f'/data/data/{target}'))
+                if newlink != m.linkname:
+                    nm = tarfile.TarInfo(m.name)
+                    nm.type, nm.linkname = tarfile.SYMTYPE, newlink
+                    nm.mode, nm.mtime = m.mode, int(m.mtime)
+                    nm.uid, nm.gid, nm.uname, nm.gname = m.uid, m.gid, m.uname, m.gname
+                    tout.addfile(nm)
+                    changed += 1
+                else:
+                    tout.addfile(m)
+                continue
             if not m.isfile() or m.size > MAX_INLINE:
-                tout.addfile(m)  # 目录/符号链接/硬链接/超大成员：元数据原样透传
+                tout.addfile(m)  # 目录/硬链接/超大成员：元数据原样透传
                 continue
             scanned += 1
             data = tin.extractfile(m).read()

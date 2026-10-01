@@ -62,6 +62,37 @@ const skip = (msg) => {
 
 if (!existsSync(ASSETS)) { skip(`无运行时资产目录（${ASSETS}）——协调仓或未注入的树`); process.exit(0) }
 if (!existsSync(SNAP)) { skip(`快照不在场（${SNAP}，abi=${ABI}）——先构建快照再跑本门禁`); process.exit(0) }
+
+// ── @vscode/ripgrep 平台包在场性（2026-10-01 实机实锤；本门禁在此处跑，不受后续 SKIP 分支影响）──
+// dsh-tool-fs-search 的 resolveRgPath() 只认 `@vscode/ripgrep` 的 rgPath（**不做 PATH 查找**），
+// 而该包的 android-arm64 平台包是 optionalDependency —— 装配/整树替换时极易漏掉：
+//   · 就地升级：tools/deploy-engine-to-dev.sh 整树替换 dsh/
+//   · 换快照引擎：tools/rebuild-snapshot-engine.py 跳过基座 dsh/ 全部成员，只写传入树
+// 漏掉的后果：glob/grep 全线 `could not start its search command (ripgrep launch failed)`，
+// 而 bash 仍正常（走 profile 的 PATH，不经这条包解析）—— 排查时极具误导性。
+// 只在快照确实挂了 dsh-tool-fs-search 时判红（该工具面不挂载的变体不适用）。
+{
+  const FS_SEARCH_DIR = 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tool-fs-search/'
+  const RG_WRAP = 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@vscode/ripgrep/lib/index.js'
+  const RG_BIN = 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@vscode/ripgrep-android-arm64/bin/rg'
+  let listing = ''
+  try {
+    listing = execFileSync(TAR, ['-tf', SNAP], { encoding: 'utf8', maxBuffer: 1024 * 1024 * 1024 })
+  } catch (e) {
+    fail(`无法列出快照成员（${SNAP}）：${e.message}\n  提示：.tar.xz 需要 PATH 上有 xz（设备侧常见坑）`)
+  }
+  const members = new Set(listing.split('\n').map((s) => s.replace(/^\.\//, '').trim()).filter(Boolean))
+  const hasFsSearch = [...members].some((m) => m.startsWith(FS_SEARCH_DIR))
+  if (!hasFsSearch) {
+    console.log('SKIP      @vscode/ripgrep：快照未含 dsh-tool-fs-search（该工具面未挂载，判据不适用）')
+  } else if (!members.has(RG_WRAP) || !members.has(RG_BIN)) {
+    const missing = [!members.has(RG_WRAP) ? RG_WRAP : null, !members.has(RG_BIN) ? RG_BIN : null].filter(Boolean)
+    fail(`快照缺 @vscode/ripgrep（glob/grep 会全线 ripgrep launch failed）——缺：${missing.join(' 与 ')}\n`
+      + '  修法：装配/替换引擎树前先跑 tools/ensure-vscode-ripgrep.sh <dshTreeDir>（幂等、缺源即 fail-closed）')
+  } else {
+    console.log('OK        @vscode/ripgrep 平台包在场（glob/grep 的 resolveRgPath 前提）')
+  }
+}
 if (!existsSync(join(ROOT, 'scripts', 'patches', 'registry.json'))) {
   skip('registry.json 不在场（apk 仓自包含树请用协调仓跑本门禁）')
   process.exit(0)

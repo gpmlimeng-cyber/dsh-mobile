@@ -87,6 +87,24 @@ if (contract.clientSlots.enabledRow !== undefined) {
   else ok('profile patch 保留 ' + contract.clientSlots.enabledRow + ' 启用')
 }
 
+// == 5. shell 路径形态（2026-10-01 实机实锤） ==
+// /data/data/<pkg>/files/... 与 /data/user/0/<pkg>/files/... 是**同一物理目录**，但在 app 域下
+// **不等价**：termux-exec 的 LD_PRELOAD exec 拦截器只对匹配 TERMUX__PREFIX（现代形态）的路径
+// 重写成 `linker64 <elf>`；旧式路径不匹配 → 退化为直接 execve app_data_file → 被
+// untrusted_app_34 拒绝（EACCES）。实机表现：bash/glob/grep 全线 `Error: spawn bash EACCES`，
+// 且错误文案指向 bash 而非路径，极具误导性（dev 包 com.deepcode.shell 就是这么坏的）。
+{
+  const shellPatch = readFileSync(join(root, 'scripts/profile-web.cordis.patch.yml'), 'utf8')
+  const legacyLines = shellPatch
+    .split('\n')
+    .filter((line) => /^\s*(bashPath|prefix|home|cwd|workspaceRoot):\s*\/data\/data\//.test(line))
+  if (legacyLines.length > 0) {
+    fail('profile patch 的 shell 路径是旧式 /data/data 形态（app 域下不可 exec，bash/glob/grep 会 EACCES）：' + legacyLines.map((l) => l.trim()).join(' | '))
+  } else {
+    ok('profile patch 的 shell 路径为现代 /data/user/0 形态')
+  }
+}
+
 // 槽位**声明面**（0.14.1 §1.1b 决策 1 第 3 项）：上面的 §4 只断言「我们注册了哪些槽」，
 // 全是**我方源码里挑字符串**——上游把槽删掉/改 kind/改 scope 时它照样绿（文本还在我方文件里）。
 // 这是「注入层在升级后静默失效」的真实盲区，本段用**上游声明源**做结构性判据：

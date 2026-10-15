@@ -841,3 +841,16 @@
     ① **成员名约定**：基座快照与门禁（`check-combo-cache.mjs` 等按**精确成员名** `usr/...` 取文件）都按**无前缀**约定；而 `tar -cf - -C "$DIR" .` 产出 `./usr/...` ⇒ 门禁报 `tar.real: usr/... Not found in archive` 并判红，看起来像「快照里没这个文件」而实际是名字约定不一致。修法：`tar -cf - -C "$DIR" --transform 's,^\./,,' .`。
     ② **combo 缓存与 `client.js` 内容强绑定**：`home/.dsh/profiles/web/.combo-cache/` 的清单按 `sha256(*/lib/client.js)` 索引、`entry.id` 对齐相邻 `package.json` 的 name ⇒ **任何改写这些文件内容的步骤（含路径形态归一）都会让键失配**，门禁判红「全部客户端 bundle 有缓存条目 / 合并后条目非空」。修法：归一**跳过** `*/lib/client.js`、其 `.map` 与 `.combo-cache/` 目录（这些是浏览器侧，不 exec，路径形态对它们没有意义），或改后**重算缓存**：`node scripts/lib/combo-precompute.mjs --scan <stageRoot> --out <stageRoot>/home/.dsh/profiles/web/.combo-cache --manifest client-combos.json --engine <ver>`。
     ③ **APK 更新不重抽快照**：`.snapshot-fingerprint` 不变时应用保留既有 `files/usr` ⇒ 现场修复会存活，而**新快照只对全新安装生效**；且快照内含 `home/.dsh/settings.yaml`，强制重抽（删指纹）会用它**覆盖用户设置**，收益仅「live 树与新快照一致」⇒ **不要为了整洁度去重抽**。（与 208 同族：升级与用户数据的关系。）
+
+214. **壳内（app 上下文）跑 gradle 必须先修 `java.io.tmpdir`；纯壳改动不必过快照注入链（2026-10-15 实测）**：
+    ① 直接 `./gradlew :app:assembleDebug` 会在 3 秒内失败：
+       `Cannot create service of type BuildLifecycleAwareVirtualFileSystem … java.io.tmpdir is set to a directory that doesn't exist: /data/data/com.termux/files/usr/tmp`
+       ——前缀 JVM 的 `java.io.tmpdir` 默认指向**编译期烧死的 termux 路径**（与前缀 node 的 OPENSSLDIR 同源，见坑 5/210②）。
+       修法（三条都要，gradle daemon 与 worker 各读一处）：`TMPDIR=<真实目录>` +
+       `JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=<同>` + `GRADLE_OPTS=-Djava.io.tmpdir=<同>`（用 `files/home/tmp`）。
+       §3.6 的「本机私有环境」清单应补这一项。
+    ② 只改壳（Kotlin/res）时**不必**走 `tools/build-dev-apk.sh` 的完整注入链：`app/src/main/assets/snapshot.tar.xz`
+       上一次构建已在位（256 MB，含已验证快照），gradle 会原样打包 ⇒ 省掉门禁与 inject-all，本次 **35 s 出包**
+       （对比完整链的分钟级 + 快照重压）。要换快照才走完整链。
+    ③ 验状态栏/系统栏颜色这类「像素级」判据时，用 shell 侧 `screencap -p /sdcard/...png` 落盘（多显示器时加 `-d <id>`；
+       不加只有警告、默认第一块屏），再用工作区 `DSH-ENT/png-sample.js` 自解 PNG 采样——不要依赖截图工具的临时文件（读完即删）。

@@ -86,6 +86,9 @@ internal object ImmersiveMode {
         }
         activity.window.decorView.systemUiVisibility = flags
       }
+      // 2026-10 提单：隐藏/显示系统栏会重置窗口外观——状态栏底色与图标明暗必须重放
+      // （否则关掉沉浸式后状态栏又回到主题固定色，或图标明暗与页面底色相反）。
+      StatusBarChrome.reapply(activity)
     } catch (t: Throwable) {
       Log.e("dsh-image", "applyImmersive failed: " + t.message)
     }

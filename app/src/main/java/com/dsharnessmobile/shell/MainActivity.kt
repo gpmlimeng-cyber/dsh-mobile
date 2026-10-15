@@ -222,6 +222,9 @@ class MainActivity : ComponentActivity() {
       }
     }
     uiChrome.applyImmersive(uiChrome.immersivePrefs())
+    // 2026-10 提单：状态栏与页面同色。主题已把 android:statusBarColor 置 transparent，
+    // 这里显式再应用一次并同步图标明暗（沉浸式开关切换后会重放）。
+    StatusBarChrome.reapply(this)
     val root = FrameLayout(this)
     webView = WebView(this).apply {
       id = View.generateViewId()
@@ -793,6 +796,8 @@ class MainActivity : ComponentActivity() {
         if (isEngineSource(url)) pullBackGateState(view)
         pushSystemDark(view)
         pushWebInsets(view)
+        // 2026-10 提单：状态栏跟随页面（<meta name="theme-color"> 观察器；脚本幂等，重载后自动重装）。
+        StatusBarChrome.installWatcher(view)
         // 悬浮球避让帧补放（启动期首帧注入若因页面未就绪落空，此处重放）
         if (isEngineSource(url)) OverlayService.instance?.replayFrame()
         if (isEngineSource(url) && !userClosedEngine) engineFlow.startFreezeWatchdog()
@@ -910,6 +915,8 @@ class MainActivity : ComponentActivity() {
         return true
       }
     }
+    // 2026-10 提单：页面用 <meta name="theme-color"> 声明状态栏底色（未声明则透明透出页面底色）。
+    webView.addJavascriptInterface(StatusBarChrome.Bridge(this), "dshStatusBarBridge")
     webView.addJavascriptInterface(
       AndroidBridge(
         onPickRequest = { callbackId -> dirPickerController.pickDirectoryWithPermissionCheck(callbackId) },

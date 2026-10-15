@@ -39,6 +39,12 @@ window.dshStatusBarBridge.apply(cssColor)
 **优先级**：页面显式 `set()` **>** `<meta name="theme-color">` **>** 透明。
 （`set('solid', '色')` 之后，页面 meta 再变**不会**推翻它；要交还控制权就调 `reset()`。）
 
+> ⚠️ **`mode="transparent"` 时 `color` 参数被忽略**：壳直接写 `window.statusBarColor = 0x00000000`（不画任何色），
+> 既不读 `color` 也不读 meta。该语义由单测固定（`StatusBarChromeTest.kt` 的 `decideColor("transparent", …) == null`）。
+> 想给状态栏区着色只有 `mode="solid"` 一条路——但那是不透明条带，会**盖住**该区域内的页面内容。
+> 若页面看到的"状态栏区有色差"，先按 `docs/AGENTS/statusbar-transparent-band-verification.md` 的口径复测
+> （行均值会把系统图标字形算成台阶，判底色要看背景众数）。
+
 ### 典型用法
 
 ```js

@@ -854,3 +854,15 @@
        （对比完整链的分钟级 + 快照重压）。要换快照才走完整链。
     ③ 验状态栏/系统栏颜色这类「像素级」判据时，用 shell 侧 `screencap -p /sdcard/...png` 落盘（多显示器时加 `-d <id>`；
        不加只有警告、默认第一块屏），再用工作区 `DSH-ENT/png-sample.js` 自解 PNG 采样——不要依赖截图工具的临时文件（读完即删）。
+
+215. **行均值会把系统状态栏的图标字形算成「壳自绘的底色/分割线」（2026-10-16 实测，假阳性 −6.6/255；台阶位置 = 状态栏底边）**：
+    `screencap` 的**全宽行均值剖面**里，状态栏条带内的时钟/电量/信号字形是深色像素（本机实测 63~88），
+    把含它们的行整行压低；越过字形底边（= 状态栏高度，本机 `SurfaceFlinger` 报 140 device px = CSS 51）
+    整行回到页面底色 ⇒ 出现一步"变亮"的台阶，看起来像壳在状态栏区自绘了一层 scrim。
+    实测对照（dev 壳，`set('transparent',…)` 已生效、logcat `color=#00000000`）：
+    行均值口径 条带[0..109]=245.21 vs 下方[110..]=251.82（−6.6，台阶 y=110）；
+    背景众数口径 条带 `y=10..50` 与 `y=115..135` **同为 `252,252,252`**（distinct=2）⇒ 无 scrim、无底色层。
+    判据修法：**底色看背景众数**，别用行均值——`node scripts/screenshot-profile.mjs rect <raw> <x0 x1 y0 y1>`（本仓新增，
+    配 `rows` 子命令看台阶形状）。完整复核见 `docs/AGENTS/statusbar-transparent-band-verification.md`。
+    另：`mode="transparent"` 时桥的 `color` 参数**被忽略**（`decideColor` 命中即 `return null`，单测
+    `StatusBarChromeTest.kt:75` 固定）——不要再把它当作「可传 scrim 色」使用。
